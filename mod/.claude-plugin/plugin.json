@@ -1,0 +1,5 @@
+{
+  "name": "control-center",
+  "version": "0.6.0",
+  "description": "Дублює сесії Claude Code у локальну панель керування"
+}

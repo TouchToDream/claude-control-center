@@ -1,0 +1,11 @@
+{
+  "name": "claude-control-center",
+  "owner": { "name": "TouchToDream" },
+  "plugins": [
+    {
+      "name": "control-center",
+      "source": "./mod",
+      "description": "Дублює сесії Claude Code у локальну панель керування"
+    }
+  ]
+}

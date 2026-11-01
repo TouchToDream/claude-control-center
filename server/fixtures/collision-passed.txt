@@ -1,0 +1,9 @@
+
+  [30;42;1m PASS [39;49;22m[39m Tests\Unit\Types\MoneyTest[39m
+  [32;1m✓[39;22m[90m [39m[90mkeeps kopecks and currency[39m
+  [32;1m✓[39;22m[90m [39m[90mtimes rounds to kopecks and keeps the currency[39m
+  [32;1m✓[39;22m[90m [39m[90mcasts through money cast[39m
+
+  [90mTests:[39m    [32;1m3 passed[39;22m[90m (9 assertions)[39m
+  [90mDuration:[39m [39m0.11s[39m
+

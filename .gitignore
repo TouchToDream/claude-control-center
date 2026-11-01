@@ -1,0 +1,7 @@
+node_modules/
+web/dist/
+sandbox/
+.claude-plugin/types/
+mod/.claude-plugin/types/
+*.log
+.DS_Store
