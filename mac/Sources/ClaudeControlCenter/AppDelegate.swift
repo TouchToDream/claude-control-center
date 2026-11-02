@@ -130,19 +130,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func toggle() {
-        let screen = mouseScreen()
-
-        switch toggleAction(isVisible: panel.isVisible, isKey: panel.isKeyWindow, isOnMouseScreen: panel.screen == screen) {
+        switch toggleAction(isVisible: panel.isVisible) {
         case .show:
             show(sessionId: sessionToOpen(hiddenAt: hiddenAt, unread: unread), onlyIfNoDraft: true)
         case .hide:
             hide()
-        case .focus(let moveToMouseScreen):
-            if moveToMouseScreen {
-                place(on: screen)
-            }
-
-            focus()
         }
     }
 

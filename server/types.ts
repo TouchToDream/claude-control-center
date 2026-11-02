@@ -143,7 +143,7 @@ export type OutboxStatus = 'queued' | 'claimed' | 'delivered' | 'dropped' | 'dis
 export type OutboxItem = {
   id: string
   sessionId: string
-  kind: 'message' | 'abort' | 'inject' | 'interrupt'
+  kind: 'message' | 'abort' | 'inject' | 'interrupt' | 'bash'
   text: string
   status: OutboxStatus
   reason: string | null

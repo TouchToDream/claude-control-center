@@ -657,7 +657,18 @@ export function createApp(options: AppOptions): App {
           return json(response, 422, { error: 'empty_message' })
         }
 
-        const item = store.enqueue(session.id, 'message', trimmed, now())
+        const isShell = trimmed.startsWith('!')
+        const command = trimmed.slice(1).trim()
+
+        if (isShell && command === '') {
+          return json(response, 422, { error: 'empty_command' })
+        }
+
+        if (isShell && !supportsShell(session.modVersion)) {
+          return json(response, 409, { error: 'mod_outdated' })
+        }
+
+        const item = isShell ? store.enqueue(session.id, 'bash', command, now()) : store.enqueue(session.id, 'message', trimmed, now())
 
         publishOutbox(item)
 
@@ -1024,6 +1035,12 @@ function waitForAsk(
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
   response.end(JSON.stringify(body))
+}
+
+function supportsShell(modVersion: string | null): boolean {
+  const [major = 0, minor = 0] = (modVersion ?? '').split('.').map(Number)
+
+  return major > 0 || minor >= 8
 }
 
 function safeDecode(value: string): string {

@@ -8,10 +8,11 @@ import { DiffDialog } from './DiffDialog.tsx'
 import { loadAttachments, loadDraft, saveAttachments, saveDraft } from './drafts.ts'
 import { Icon } from './Icon.tsx'
 import type { Attachment, OutboxItem, Row, SessionCommand, SessionView, Snapshot } from './model.ts'
-import { ago, canForceMessage, dropReason, isRunning, STATUS_LABEL } from './model.ts'
+import { ago, canForceMessage, canUseShell, dropReason, isRunning, STATUS_LABEL } from './model.ts'
 import { ModelControls } from './ModelControls.tsx'
 import { CloseDialog, RenameForm, ResumeDialog } from './SessionActions.tsx'
 import { Progress } from './Progress.tsx'
+import { shellCommand } from './shell.ts'
 import { browserStore } from './storage.ts'
 import { TestsBar } from './TestsBar.tsx'
 
@@ -51,10 +52,11 @@ function RowAttachments({ paths }: { paths: readonly string[] }) {
 function RowItem({ row }: { row: Row }) {
   if (row.kind === 'user') {
     const { text, paths } = splitAttachments(row.text)
+    const isShell = shellCommand(text) !== null
 
     return (
       <div className="row-user">
-        <div className="bubble">
+        <div className={`bubble ${isShell ? 'shell' : ''}`}>
           {row.viaPanel && <div className="small muted">з панелі</div>}
           {text}
           {paths.length > 0 && <RowAttachments paths={paths} />}
@@ -78,7 +80,7 @@ function RowItem({ row }: { row: Row }) {
 
   if (row.kind === 'result') {
     return (
-      <details className={`row-result ${row.isError ? 'failed' : ''}`}>
+      <details className={`row-result ${row.isError ? 'failed' : ''}`} open={row.toolUseId?.startsWith('shell-') === true}>
         <summary className="small muted">{row.isError ? 'Помилка інструмента' : 'Результат'}</summary>
         <pre className="mono">{row.text}</pre>
       </details>
@@ -186,6 +188,15 @@ function isSuperseded(item: OutboxItem, outbox: readonly OutboxItem[]): boolean 
   )
 }
 
+function typedText(item: OutboxItem): string {
+  return item.kind === 'bash' ? `!${item.text}` : item.text
+}
+
+const SEND_ERRORS: Record<string, string> = {
+  mod_outdated: 'У цій сесії старий мод: виконай у ній /reload-plugins, тоді команди з ! запрацюють',
+  empty_command: 'Після ! потрібна команда',
+}
+
 function QueuedNote({
   session,
   item,
@@ -197,13 +208,13 @@ function QueuedNote({
 }) {
   const isExit = item.text === '/exit'
   const isOnItsWay = item.status === 'claimed' || item.kind !== 'message'
-  const canForce = canForceMessage(session) && !item.text.startsWith('/') && session.turnId !== null
+  const canForce = canForceMessage(session) && item.kind !== 'bash' && !item.text.startsWith('/') && session.turnId !== null
 
   if (isOnItsWay) {
     return (
       <div className="outbox small">
         <span>
-          Надсилається: «{shortLabel(item.text, 100)}»
+          Надсилається: «{shortLabel(typedText(item), 100)}»
           {!canForceMessage(session) && (
             <span className="muted"> Щоб скасовувати й редагувати чергу, виконай у цій сесії /reload-plugins.</span>
           )}
@@ -215,7 +226,7 @@ function QueuedNote({
   return (
     <div className="outbox small">
       <span>
-        {isExit ? 'Сесія закриється, щойно завершить поточний хід.' : `У черзі: «${shortLabel(item.text, 100)}»`}
+        {isExit ? 'Сесія закриється, щойно завершить поточний хід.' : `У черзі: «${shortLabel(typedText(item), 100)}»`}
       </span>
       <span className="outbox-actions">
         {canForce && (
@@ -242,7 +253,7 @@ function QueuedNote({
           <button
             type="button"
             className="ghost mini"
-            onClick={() => void cancelOutbox(item.id).then(() => onEdit(item.text))}
+            onClick={() => void cancelOutbox(item.id).then(() => onEdit(typedText(item)))}
           >
             Редагувати
           </button>
@@ -273,7 +284,7 @@ function OutboxNotes({
 
   const retry = (item: OutboxItem) => {
     void dismissOutbox(item.id)
-    void sendMessage(session.id, item.text)
+    void sendMessage(session.id, typedText(item))
   }
 
   return (
@@ -283,7 +294,7 @@ function OutboxNotes({
           <div key={item.id} className="outbox failed small">
             <span>
               Не доставлено: {dropReason(item.reason)}
-              <span className="muted"> «{shortLabel(item.text, 80)}»</span>
+              <span className="muted"> «{shortLabel(typedText(item), 80)}»</span>
             </span>
             <span className="outbox-actions">
               <button type="button" className="ghost mini" onClick={() => retry(item)}>
@@ -370,7 +381,9 @@ function Composer({ session, draft, onDraft, attachments, onAttachments }: Compo
   const picker = useRef<HTMLInputElement>(null)
   const ready = attachments.filter(item => item.status === 'ready' && item.path !== null)
   const isUploading = attachments.some(item => item.status === 'uploading')
-  const canSend = !isUploading && (draft.trim() !== '' || ready.length > 0)
+  const command = shellCommand(draft)
+  const isShell = command !== null
+  const canSend = isShell ? command !== '' : !isUploading && (draft.trim() !== '' || ready.length > 0)
   const [commands, setCommands] = useState<SessionCommand[]>([])
   const [highlighted, setHighlighted] = useState(0)
   const [isMenuClosed, setIsMenuClosed] = useState(false)
@@ -419,16 +432,24 @@ function Composer({ session, draft, onDraft, attachments, onAttachments }: Compo
       return
     }
 
-    const text = composeMessage(draft, ready.map(item => item.path as string))
+    const text = isShell ? draft.trim() : composeMessage(draft, ready.map(item => item.path as string))
     const kept = draft
 
     onDraft('')
-    onAttachments(() => [])
     setError(null)
-    sendMessage(session.id, text).catch(() => {
+
+    if (!isShell) {
+      onAttachments(() => [])
+    }
+
+    sendMessage(session.id, text).catch((failure: Error) => {
       onDraft(kept)
-      onAttachments(() => ready)
-      setError('Сервіс не прийняв повідомлення')
+
+      if (!isShell) {
+        onAttachments(() => ready)
+      }
+
+      setError(SEND_ERRORS[failure.message] ?? 'Сервіс не прийняв повідомлення')
     })
   }
 
@@ -467,7 +488,7 @@ function Composer({ session, draft, onDraft, attachments, onAttachments }: Compo
 
   return (
     <div
-      className={`composer ${isDragging ? 'dragging' : ''}`}
+      className={`composer ${isDragging ? 'dragging' : ''} ${isShell ? 'shell' : ''}`}
       onDragOver={event => {
         if (hasFiles(event)) {
           event.preventDefault()
@@ -482,7 +503,15 @@ function Composer({ session, draft, onDraft, attachments, onAttachments }: Compo
       }}
     >
       {error !== null && <p className="small text-fail">{error}</p>}
-      {attachments.length > 0 && (
+      {isShell && (
+        <p className="shell-label small">
+          <span className="shell-badge mono">Термінал</span>
+          {canUseShell(session)
+            ? 'Команда виконається в сесії, як ! у Claude Code, через ті самі правила дозволів.'
+            : 'У цій сесії старий мод: виконай у ній /reload-plugins, тоді команди з ! запрацюють.'}
+        </p>
+      )}
+      {attachments.length > 0 && !isShell && (
         <div className="attachments">
           {attachments.map(item => (
             <AttachmentChip
@@ -515,6 +544,7 @@ function Composer({ session, draft, onDraft, attachments, onAttachments }: Compo
       <div className="composer-row">
         <button
           type="button"
+          hidden={isShell}
           className="action attach"
           aria-label="Додати файл або скріншот"
           title="Додати файл або скріншот. Можна вставити з буфера чи перетягнути"

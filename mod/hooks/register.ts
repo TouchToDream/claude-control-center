@@ -1,7 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { clip, redact } from './redact.ts'
 
-const MOD_VERSION = '0.7.0'
+const MOD_VERSION = '0.8.0'
 const TICK_MS = 1500
 const FLUSH_MS = 700
 const DOWN_RETRY_MS = 5000
@@ -17,6 +17,7 @@ const LONG_POLL_MS = 25_000
 const ASK_WAIT_MS = 6 * 60 * 60 * 1000
 const OPEN_COMMAND = 'control-center'
 const SKIPPED_DOORS = new Set(['attachment', 'hook-context', 'queue', 'tool-message'])
+const ROW_DOORS = ['prompt', 'command', 'response', 'tool-result', 'delivery', 'compaction', 'notice'] as const
 const PERSON_ONLY_TOOLS = new Set(['ExitPlanMode'])
 const SLASH_COMMAND = /^\/([^\s/]+)(?:\s+([\s\S]*))?$/
 const WANTS_OUTPUT = /test|spec|phpunit|pest|jest|vitest|gh\s+pr/i
@@ -29,7 +30,7 @@ type Config = { url: string; key: string }
 
 type Command = {
   id: string
-  kind: 'message' | 'abort' | 'inject' | 'interrupt'
+  kind: 'message' | 'abort' | 'inject' | 'interrupt' | 'bash'
   text: string
 }
 
@@ -271,6 +272,64 @@ async function refreshCommands($: Dollar): Promise<void> {
   }
 }
 
+async function runShell($: Dollar, command: Command): Promise<string | null> {
+  report({
+    t: 'row',
+    uuid: `shell-${command.id}`,
+    door: 'prompt',
+    role: 'user',
+    viaPanel: true,
+    blocks: [{ type: 'text', text: mask(`!${command.text}`, TEXT_LIMIT) }],
+  })
+
+  const answer = await $.tool.call({ tool: 'Bash', command: command.text, description: 'Команда з Центру керування' })
+
+  const toolUseId = `shell-${command.id}`
+  const showResult = (text: string, isError: boolean) =>
+    report({
+      t: 'row',
+      uuid: `${toolUseId}-out`,
+      door: 'tool-result',
+      role: 'user',
+      viaPanel: true,
+      blocks: [{ type: 'tool_result', tool_use_id: toolUseId, text: mask(text, TEXT_LIMIT), is_error: isError }],
+    })
+
+  report({
+    t: 'row',
+    uuid: `${toolUseId}-call`,
+    door: 'response',
+    role: 'assistant',
+    viaPanel: true,
+    blocks: [{ type: 'tool_use', id: toolUseId, name: 'Bash', summary: mask(command.text, TEXT_LIMIT) }],
+  })
+
+  if (answer.deny !== undefined) {
+    showResult(answer.deny, true)
+
+    return `Команду не дозволено: ${answer.deny}`
+  }
+
+  const record = (answer.result ?? {}) as { stdout?: string; stderr?: string }
+  const stdout = record.stdout ?? answer.text ?? ''
+  const stderr = record.stderr ?? ''
+  const output = `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`
+
+  showResult([stdout, stderr].filter(part => part !== '').join('\n'), answer.isError === true)
+
+  await $.session.append({
+    message: {
+      type: 'user',
+      content: [
+        { type: 'text', text: `<bash-input>${command.text}</bash-input>` },
+        { type: 'text', text: output },
+      ],
+    },
+  })
+
+  return null
+}
+
 async function runCommand($: Dollar, command: Command): Promise<void> {
   const settle = (status: 'delivered' | 'dropped', reason?: string) =>
     call($, `/api/mod/commands/${command.id}`, { method: 'POST', body: { status, reason } })
@@ -299,6 +358,10 @@ async function runCommand($: Dollar, command: Command): Promise<void> {
         blocks: [{ type: 'text', text: mask(command.text, TEXT_LIMIT) }],
       })
       await settle('delivered')
+    } else if (command.kind === 'bash') {
+      const refusal = await runShell($, command)
+
+      await (refusal === null ? settle('delivered') : settle('dropped', refusal))
     } else if (command.kind === 'interrupt') {
       if (bridge.turnId !== null) {
         await $.turn.abort({ turnId: bridge.turnId })
@@ -630,7 +693,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('session.append', ($, e, next) => {
+  on('session.append', { door: [...ROW_DOORS] }, ($, e, next) => {
     const isPeer = e.door === 'delivery'
 
     if (!SKIPPED_DOORS.has(e.door) && (e.message.isMeta !== true || isPeer)) {

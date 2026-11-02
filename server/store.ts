@@ -248,9 +248,13 @@ export class Store {
   }
 
   claimNext(sessionId: string, now: number, isIdle: boolean | null): OutboxItem | null {
-    const kinds = isIdle === null ? ['message', 'abort'] : isIdle ? ['message', 'abort', 'inject', 'interrupt'] : ['abort', 'inject', 'interrupt']
+    const kinds = isIdle === null
+      ? ['message', 'abort']
+      : isIdle
+        ? ['message', 'bash', 'abort', 'inject', 'interrupt']
+        : ['abort', 'inject', 'interrupt']
     const next = this.all<RawOutbox>(
-      `SELECT * FROM outbox WHERE session_id = ? AND status = 'queued' ORDER BY kind = 'message', created_at`,
+      `SELECT * FROM outbox WHERE session_id = ? AND status = 'queued' ORDER BY kind IN ('message', 'bash'), created_at`,
       sessionId,
     ).find(item => kinds.includes(item.kind))
 

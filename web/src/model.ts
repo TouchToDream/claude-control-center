@@ -152,6 +152,10 @@ function hasModVersion(session: SessionView, minimumMinor: number): boolean {
   return major > 0 || minor >= minimumMinor
 }
 
+export function canUseShell(session: SessionView): boolean {
+  return hasModVersion(session, 8)
+}
+
 export function canChooseModel(session: SessionView): boolean {
   return hasModVersion(session, 3)
 }

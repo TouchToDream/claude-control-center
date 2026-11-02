@@ -949,3 +949,45 @@ test('uploads over the limit, of unknown sessions or outside the folder are refu
   assert.equal(unknown.status, 404)
   assert.equal(escape.status, 404)
 })
+
+const helloWithMod = (sessionId: string, modVersion: string) =>
+  events(sessionId, [{ t: 'hello', at: Date.now(), cwd: '/work/repo', repoRoot: '/work/repo', model: 'm', surfaces: ['terminal'], modVersion }])
+
+const sendText = (sessionId: string, text: string) =>
+  panel(`/api/panel/sessions/${sessionId}/messages`, { method: 'POST', body: JSON.stringify({ text }) })
+
+const pollCommands = async (sessionId: string, idle: 0 | 1) =>
+  ((await (await mod(`/api/mod/poll?session=${sessionId}&idle=${idle}`)).json()) as { commands: { kind: string; text: string }[] }).commands
+
+test('a message that starts with ! goes out as a shell command once the session is free', async () => {
+  await helloWithMod('shell', '0.8.0')
+
+  const response = await sendText('shell', '!  ls -la ')
+  const { item } = (await response.json()) as { item: { kind: string; text: string } }
+
+  assert.equal(response.status, 200)
+  assert.deepEqual([item.kind, item.text], ['bash', 'ls -la'])
+  assert.deepEqual(await pollCommands('shell', 0), [])
+  assert.deepEqual((await pollCommands('shell', 1)).map(command => [command.kind, command.text]), [['bash', 'ls -la']])
+})
+
+test('shell commands keep their place among messages', async () => {
+  await helloWithMod('shell-order', '0.8.0')
+  await sendText('shell-order', 'first')
+  await sendText('shell-order', '!git status')
+
+  assert.deepEqual((await pollCommands('shell-order', 1)).map(command => command.kind), ['message'])
+  assert.deepEqual((await pollCommands('shell-order', 1)).map(command => command.kind), ['bash'])
+})
+
+test('a shell command to an older mod or without a command is refused', async () => {
+  await helloWithMod('shell-old', '0.7.0')
+
+  const old = await sendText('shell-old', '!ls')
+  const empty = await sendText('shell', '!   ')
+
+  assert.equal(old.status, 409)
+  assert.deepEqual(await old.json(), { error: 'mod_outdated' })
+  assert.equal(empty.status, 422)
+  assert.deepEqual(await empty.json(), { error: 'empty_command' })
+})
