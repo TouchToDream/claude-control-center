@@ -3,6 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, write
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { appPath, buildMacApp, hasSwift, isAppInstalled, openArguments } from './macApp.ts'
 import { homeDirectory, loadSettings } from './settings.ts'
 
 const LABEL = 'com.claude-control-center'
@@ -125,7 +126,11 @@ function logs(): void {
 function open(): void {
   const { port, key } = loadSettings(home)
 
-  spawnSync('open', [`http://127.0.0.1:${port}/?key=${key}`], { stdio: 'inherit' })
+  const viaApp = spawnSync('open', openArguments(isAppInstalled(), port, key, null), { stdio: 'ignore' })
+
+  if (viaApp.status !== 0) {
+    spawnSync('open', openArguments(false, port, key, null), { stdio: 'inherit' })
+  }
 }
 
 function plist(): string {
@@ -238,11 +243,53 @@ function setup(): void {
     start()
   }
 
-  console.log('Готово. Панель відкривається командою npm run ccc -- open або /control-center у сесії.')
+  const hasApp = !process.argv.includes('--no-app') && process.env.CCC_HOME === undefined
+
+  if (hasApp && hasSwift()) {
+    console.log('Збираю програму для Mac…')
+
+    if (!buildMacApp(root, { launch: true })) {
+      console.log('Програму для Mac зібрати не вдалося. Панель працює в браузері, спробуй ще раз: npm run ccc -- app')
+    }
+  } else if (hasApp) {
+    console.log(
+      'Програма для Mac не зібрана: встанови Xcode Command Line Tools командою xcode-select --install і запусти npm run ccc -- app',
+    )
+  }
+
+  console.log('Готово. Панель відкривається гарячою клавішею програми, командою npm run ccc -- open або /control-center у сесії.')
+}
+
+function app(): void {
+  if (process.env.CCC_HOME !== undefined) {
+    console.log('Програма для Mac працює лише зі справжньою папкою ~/.claude-control-center: запусти без CCC_HOME')
+    process.exitCode = 1
+
+    return
+  }
+
+  if (!hasSwift()) {
+    console.log('Не знайдено Swift: встанови Xcode Command Line Tools командою xcode-select --install')
+    process.exitCode = 1
+
+    return
+  }
+
+  console.log('Збираю програму для Mac…')
+
+  if (!buildMacApp(root, { launch: true })) {
+    console.log('Не вдалося зібрати програму для Mac')
+    process.exitCode = 1
+
+    return
+  }
+
+  console.log(`Програма для Mac встановлена: ${appPath()}`)
 }
 
 const commands: Record<string, () => void> = {
   start,
+  app,
   stop,
   status,
   logs,

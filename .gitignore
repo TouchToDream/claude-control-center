@@ -5,3 +5,4 @@ sandbox/
 mod/.claude-plugin/types/
 *.log
 .DS_Store
+mac/.build/

@@ -30,9 +30,11 @@ type Props = {
   isConnected: boolean
   onHome: () => void
   onTelegram: () => void
+  isSessionsOpen: boolean
+  onSessions: () => void
 }
 
-export function Header({ snapshot, isConnected, onHome, onTelegram }: Props) {
+export function Header({ snapshot, isConnected, onHome, onTelegram, isSessionsOpen, onSessions }: Props) {
   const live = snapshot.sessions.filter(isLive)
   const count = (statuses: string[]) => live.filter(session => statuses.includes(session.status)).length
   const { enabled, isReady } = snapshot.telegram
@@ -49,6 +51,9 @@ export function Header({ snapshot, isConnected, onHome, onTelegram }: Props) {
     <header className="header">
       <button type="button" className="brand ghost" onClick={onHome}>
         Центр керування
+      </button>
+      <button type="button" className="action narrow-sessions" aria-expanded={isSessionsOpen} onClick={onSessions}>
+        Сесії
       </button>
       <div className="counters">
         <div className="counter">
@@ -80,7 +85,7 @@ export function Header({ snapshot, isConnected, onHome, onTelegram }: Props) {
           Telegram
           <span className={`switch ${enabled ? 'on' : ''}`} aria-hidden="true" />
         </button>
-        <button type="button" className="tg-settings" aria-label="Налаштування Telegram" title="Налаштування Telegram" onClick={onTelegram}>
+        <button type="button" className="tg-settings" aria-label="Налаштування сповіщень" title="Налаштування сповіщень" onClick={onTelegram}>
           <Icon name="sliders" />
         </button>
       </div>

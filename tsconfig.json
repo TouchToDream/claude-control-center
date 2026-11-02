@@ -9,7 +9,15 @@
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["server/**/*.ts"]
+  "include": [
+    "server/**/*.ts",
+    "web/src/drafts.ts",
+    "web/src/selection.ts",
+    "web/src/**/*.test.ts",
+    "web/src/unread.ts"
+  ]
 }

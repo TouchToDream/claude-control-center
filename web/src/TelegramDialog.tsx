@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { loadTelegram, telegramAction } from './api.ts'
-import type { NotifyEvent, TelegramChat, TelegramView } from './model.ts'
+import { MacAlertsSection } from './MacAlertsSection.tsx'
+import type { MacAlertsView, NotifyEvent, TelegramChat, TelegramView } from './model.ts'
 
 const EVENTS: { key: NotifyEvent; label: string; note: string }[] = [
   { key: 'ask', label: 'Чекає на відповідь', note: 'зі звуком' },
@@ -12,7 +13,7 @@ const EVENTS: { key: NotifyEvent; label: string; note: string }[] = [
   { key: 'limit', label: 'Ліміт дійшов до 80% і 95%', note: 'без звуку' },
 ]
 
-export function TelegramDialog({ onClose }: { onClose: () => void }) {
+export function TelegramDialog({ macAlerts, onClose }: { macAlerts: MacAlertsView | undefined; onClose: () => void }) {
   const [state, setState] = useState<TelegramView | null>(null)
   const [token, setToken] = useState('')
   const [chats, setChats] = useState<TelegramChat[] | null>(null)
@@ -47,8 +48,12 @@ export function TelegramDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="overlay" role="presentation">
-      <div className="dialog wide" role="dialog" aria-modal="true" aria-label="Налаштування Telegram">
-        <h2>Сповіщення в Telegram</h2>
+      <div className="dialog wide" role="dialog" aria-modal="true" aria-label="Налаштування сповіщень">
+        <h2>Сповіщення</h2>
+
+        {macAlerts !== undefined && <MacAlertsSection view={macAlerts} />}
+
+        <h3 className="dialog-group">Telegram</h3>
 
         {state === null ? (
           <p className="small muted">Завантаження…</p>

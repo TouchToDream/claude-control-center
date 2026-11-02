@@ -41,6 +41,23 @@ export type Unbridged = {
   status: string | null
 }
 
+export type MacEvent = 'question' | 'permission' | 'done' | 'turnError' | 'testsFailed' | 'gone' | 'limit'
+
+export type AlertView = {
+  id: string
+  sessionId: string | null
+  event: MacEvent
+  title: string
+  body: string
+  createdAt: number
+}
+
+export type MacAlertsView = {
+  enabled: boolean
+  events: Record<MacEvent, boolean>
+  isAppRunning: boolean
+}
+
 export type Snapshot = {
   now: number
   sessions: SessionView[]
@@ -49,6 +66,8 @@ export type Snapshot = {
   unbridged: Unbridged[]
   testRuns: TestRun[]
   telegram: TelegramView
+  alerts?: AlertView[]
+  macAlerts?: MacAlertsView
 }
 
 export type TimelineEntry = { sessionId: string; ts: number; status: Status }

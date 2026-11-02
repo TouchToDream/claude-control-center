@@ -1,7 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { clip, redact } from './redact.ts'
 
-const MOD_VERSION = '0.6.0'
+const MOD_VERSION = '0.7.0'
 const TICK_MS = 1500
 const FLUSH_MS = 700
 const DOWN_RETRY_MS = 5000
@@ -364,7 +364,14 @@ async function openPanel($: Dollar): Promise<string> {
     return 'Сервіс панелі не відповідає: запусти його командою npm run ccc -- start'
   }
 
-  const opened = await $.process.run(['open', `${config.url}/?key=${config.key}#${await $.session.id()}`], {
+  const sessionId = await $.session.id()
+  const inApp = await $.process.run(['open', '-g', `ccc://session/${encodeURIComponent(sessionId)}`], { timeoutMs: 5000 })
+
+  if (inApp.exitCode === 0) {
+    return 'Центр керування відкрито'
+  }
+
+  const opened = await $.process.run(['open', `${config.url}/?key=${config.key}#${sessionId}`], {
     timeoutMs: 5000,
   })
 

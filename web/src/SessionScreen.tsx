@@ -4,12 +4,14 @@ import remarkGfm from 'remark-gfm'
 import { abortTurn, cancelOutbox, dismissOutbox, forceOutbox, loadCommands, loadOlderRows, sendMessage } from './api.ts'
 import { AskCard } from './AskCard.tsx'
 import { DiffDialog } from './DiffDialog.tsx'
+import { loadDraft, saveDraft } from './drafts.ts'
 import { Icon } from './Icon.tsx'
 import type { OutboxItem, Row, SessionCommand, SessionView, Snapshot } from './model.ts'
 import { ago, canForceMessage, dropReason, isRunning, STATUS_LABEL } from './model.ts'
 import { ModelControls } from './ModelControls.tsx'
 import { CloseDialog, RenameForm, ResumeDialog } from './SessionActions.tsx'
 import { Progress } from './Progress.tsx'
+import { browserStore } from './storage.ts'
 import { TestsBar } from './TestsBar.tsx'
 
 const HISTORY_PAGE = 400
@@ -410,16 +412,21 @@ function SidePanel({
   session,
   clock,
   onFile,
+  onClose,
 }: {
   session: SessionView
   clock: number
   onFile: (path: string) => void
+  onClose: () => void
 }) {
   const agents = session.agents.filter(agent => ['pending', 'running', 'waiting'].includes(agent.status))
   const context = session.contextPercent
 
   return (
     <aside className="side">
+      <button type="button" className="action narrow-side side-close" onClick={onClose}>
+        Сховати деталі
+      </button>
       <Progress session={session} clock={clock} />
 
       <div className="side-row small muted">
@@ -485,16 +492,19 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
   const [isRenaming, setIsRenaming] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
   const [isResuming, setIsResuming] = useState(false)
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState(() => loadDraft(browserStore(), session.id))
   const [diffPath, setDiffPath] = useState<string | null>(null)
+  const [isSideOpen, setIsSideOpen] = useState(false)
   const asks = snapshot.asks.filter(ask => ask.sessionId === session.id)
+
+  useEffect(() => saveDraft(browserStore(), session.id, draft), [session.id, draft])
   const run = session.tests
   const showTests = run !== null && (run.endedAt === null || run.failed === true)
   const isOffline = session.status === 'offline'
   const canResume = session.endedAt !== null
 
   return (
-    <div className="session">
+    <div className={`session ${isSideOpen ? 'side-open' : ''}`}>
       <div className="session-main">
         <div className="session-head">
           <div className="session-title">
@@ -515,6 +525,14 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
             </div>
           </div>
           <div className="session-actions">
+            <button
+              type="button"
+              className="action narrow-side"
+              aria-expanded={isSideOpen}
+              onClick={() => setIsSideOpen(value => !value)}
+            >
+              Деталі
+            </button>
             {session.turnId !== null && (
               <button type="button" className="action warn" onClick={() => void abortTurn(session.id)}>
                 <Icon name="stop" />
@@ -560,7 +578,7 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
           )}
         </div>
       </div>
-      <SidePanel session={session} clock={clock} onFile={setDiffPath} />
+      <SidePanel session={session} clock={clock} onFile={setDiffPath} onClose={() => setIsSideOpen(false)} />
       {diffPath !== null && (
         <DiffDialog session={session} path={diffPath} onPath={setDiffPath} onClose={() => setDiffPath(null)} />
       )}

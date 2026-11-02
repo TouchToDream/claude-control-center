@@ -3,6 +3,7 @@ import type { SQLInputValue, StatementSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { blankSession } from './ingest.ts'
 import type {
+  Alert,
   Ask,
   AskKind,
   AskStatus,
@@ -80,6 +81,17 @@ CREATE TABLE IF NOT EXISTS session_commands (
   session_id TEXT PRIMARY KEY,
   list TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS alerts (
+  id TEXT PRIMARY KEY,
+  session_id TEXT,
+  event TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  ask_id TEXT,
+  created_at INTEGER NOT NULL,
+  read_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS alerts_by_read ON alerts (read_at, created_at);
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -127,6 +139,17 @@ type RawAsk = {
   answer: string | null
   created_at: number
   updated_at: number
+}
+
+type RawAlert = {
+  id: string
+  session_id: string | null
+  event: Alert['event']
+  title: string
+  body: string
+  ask_id: string | null
+  created_at: number
+  read_at: number | null
 }
 
 export type NewRow = Omit<Row, 'seq'>
@@ -383,6 +406,47 @@ export class Store {
     )
   }
 
+  addAlert(alert: Alert): void {
+    this.run(
+      `INSERT INTO alerts (id, session_id, event, title, body, ask_id, created_at, read_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      alert.id,
+      alert.sessionId,
+      alert.event,
+      alert.title,
+      alert.body,
+      alert.askId,
+      alert.createdAt,
+      alert.readAt,
+    )
+  }
+
+  unreadAlerts(limit = 100): Alert[] {
+    return this.all<RawAlert>(
+      `SELECT * FROM alerts WHERE read_at IS NULL ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+      limit,
+    ).map(raw => ({
+      id: raw.id,
+      sessionId: raw.session_id,
+      event: raw.event,
+      title: raw.title,
+      body: raw.body,
+      askId: raw.ask_id,
+      createdAt: raw.created_at,
+      readAt: raw.read_at,
+    }))
+  }
+
+  markAlertsRead(ids: readonly string[], at: number): number {
+    let count = 0
+
+    for (const id of ids) {
+      count += Number(this.run(`UPDATE alerts SET read_at = ? WHERE id = ? AND read_at IS NULL`, at, id).changes)
+    }
+
+    return count
+  }
+
   meta(key: string): string | null {
     return this.get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, key)?.value ?? null
   }
@@ -404,6 +468,7 @@ export class Store {
     this.run(`DELETE FROM test_runs WHERE started_at < ?`, cutoff)
     this.run(`DELETE FROM outbox WHERE updated_at < ?`, cutoff)
     this.run(`DELETE FROM asks WHERE updated_at < ?`, cutoff)
+    this.run(`DELETE FROM alerts WHERE created_at < ?`, cutoff)
     this.run(`DELETE FROM sessions WHERE last_seen_at < ?`, cutoff)
     this.run(`DELETE FROM session_commands WHERE session_id NOT IN (SELECT id FROM sessions)`)
 

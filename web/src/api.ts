@@ -1,9 +1,22 @@
-import type { OutboxItem, Row, SessionCommand, Snapshot, TelegramView, TimelineEntry } from './model.ts'
+import type { MacAlertsView, MacEvent, OutboxItem, Row, SessionCommand, Snapshot, TelegramView, TimelineEntry } from './model.ts'
 
 export type ServerMessage =
   | { type: 'state'; state: Snapshot }
   | { type: 'rows'; rows: Row[] }
   | { type: 'outbox'; item: OutboxItem }
+
+export type ViewingMessage = { type: 'viewing'; sessionId: string | null; isVisible: boolean }
+
+let openSocket: WebSocket | null = null
+let lastViewing: ViewingMessage | null = null
+
+export function report(message: ViewingMessage): void {
+  lastViewing = message
+
+  if (openSocket?.readyState === WebSocket.OPEN) {
+    openSocket.send(JSON.stringify(message))
+  }
+}
 
 async function post(path: string, body: unknown): Promise<Response> {
   const response = await fetch(path, {
@@ -95,6 +108,13 @@ export async function resumeSession(
   return response.json()
 }
 
+export async function saveMacAlerts(changes: {
+  enabled?: boolean
+  events?: Partial<Record<MacEvent, boolean>>
+}): Promise<MacAlertsView> {
+  return (await (await post('/api/panel/mac-alerts', changes)).json()) as MacAlertsView
+}
+
 export async function loadTelegram(): Promise<TelegramView> {
   const response = await fetch('/api/panel/telegram')
 
@@ -136,10 +156,23 @@ export function connect(
   let retry: number | undefined
 
   const open = () => {
-    socket = new WebSocket(`ws://${location.host}/ws`)
-    socket.onopen = () => onStatus(true)
-    socket.onmessage = event => onMessage(JSON.parse(String(event.data)) as ServerMessage)
-    socket.onclose = () => {
+    const current = new WebSocket(`ws://${location.host}/ws`)
+
+    socket = current
+    current.onopen = () => {
+      openSocket = current
+      onStatus(true)
+
+      if (lastViewing !== null) {
+        current.send(JSON.stringify(lastViewing))
+      }
+    }
+    current.onmessage = event => onMessage(JSON.parse(String(event.data)) as ServerMessage)
+    current.onclose = () => {
+      if (openSocket === current) {
+        openSocket = null
+      }
+
       onStatus(false)
 
       if (!isStopped) {

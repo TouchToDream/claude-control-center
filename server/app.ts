@@ -6,6 +6,8 @@ import { extname, join, normalize, resolve, sep } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import { resumeBackgroundSession, startBackgroundSession, stopBackgroundSession } from './background.ts'
 import type { BackgroundResult } from './background.ts'
+import { MAC_EVENTS, MacAlerts } from './alerts.ts'
+import type { Alert, MacEvent, Viewing } from './alerts.ts'
 import { absolutePath, isSafePath, openInIde, readDiff } from './changes.ts'
 import { applyEvents, applyTestProgress } from './ingest.ts'
 import { Notifier, NOTIFY_EVENTS } from './notifier.ts'
@@ -94,6 +96,8 @@ export function createApp(options: AppOptions): App {
   const openFile = options.openFile ?? openInIde
   const notifier = new Notifier({ store, api: telegram, secrets })
   const clients = new Set<WebSocket>()
+  const macAlerts = new MacAlerts(store)
+  const clientInfo = new Map<WebSocket, ClientInfo>()
   const waiters = new Map<string, Set<Waiter>>()
   let rateLimits: RateLimit[] = JSON.parse(store.meta('rateLimits') ?? '[]') as RateLimit[]
   let unbridged: RegistryEntry[] = []
@@ -105,6 +109,20 @@ export function createApp(options: AppOptions): App {
 
     return { ...session, status, stage: computeStage(session, status) }
   }
+
+  const viewing = (): Viewing => {
+    const visible = [...clientInfo.values()].filter(info => info.isVisible)
+
+    return {
+      sessionIds: new Set(visible.flatMap(info => (info.sessionId === null ? [] : [info.sessionId]))),
+      isAnyPanelVisible: visible.length > 0,
+    }
+  }
+
+  const macAlertsView = () => ({
+    ...macAlerts.settings(),
+    isAppRunning: [...clientInfo.values()].some(info => info.isApp),
+  })
 
   const snapshot = () => {
     const at = now()
@@ -118,6 +136,8 @@ export function createApp(options: AppOptions): App {
       unbridged,
       testRuns: store.testRuns(20),
       telegram: notifier.view(),
+      alerts: macAlerts.unread().map(alertView),
+      macAlerts: macAlertsView(),
     }
   }
 
@@ -277,7 +297,19 @@ export function createApp(options: AppOptions): App {
       }
     }
 
-    notifier.tick(at, [...store.sessions.values()].map(session => sessionView(session, asks, at)), asks, rateLimits)
+    const views = [...store.sessions.values()].map(session => sessionView(session, asks, at))
+    const alerted = macAlerts.tick(at, views, asks, rateLimits, viewing())
+
+    notifier.tick(at, views, asks, rateLimits)
+
+    for (const alert of alerted.created) {
+      send({ type: 'alert', alert: alertView(alert) })
+    }
+
+    if (alerted.changed) {
+      hasChanged = true
+    }
+
     store.flush()
 
     if (hasChanged) {
@@ -491,6 +523,61 @@ export function createApp(options: AppOptions): App {
     return json(response, 404, { error: 'not_found' })
   }
 
+  const handleMacAlerts = async (request: IncomingMessage, response: ServerResponse) => {
+    if (request.method === 'GET') {
+      return json(response, 200, macAlertsView())
+    }
+
+    if (request.method !== 'POST') {
+      return json(response, 405, { error: 'method_not_allowed' })
+    }
+
+    const body = (await readJson(request, PANEL_BODY_LIMIT)) as { enabled?: unknown; events?: Record<string, unknown> }
+    const events: Partial<Record<MacEvent, boolean>> = {}
+
+    for (const event of MAC_EVENTS) {
+      const value = body.events?.[event]
+
+      if (typeof value === 'boolean') {
+        events[event] = value
+      }
+    }
+
+    macAlerts.update({ enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined, events })
+    scheduleBroadcast()
+
+    return json(response, 200, macAlertsView())
+  }
+
+  const handleClientMessage = (ws: WebSocket, data: unknown) => {
+    const info = clientInfo.get(ws)
+    let message: { type?: unknown; client?: unknown; sessionId?: unknown; isVisible?: unknown }
+
+    try {
+      message = JSON.parse(String(data)) as typeof message
+    } catch {
+      return
+    }
+
+    if (info === undefined || typeof message !== 'object' || message === null) {
+      return
+    }
+
+    if (message.type === 'hello' && message.client === 'mac-app') {
+      info.isApp = true
+      scheduleBroadcast()
+    }
+
+    if (message.type === 'viewing') {
+      info.sessionId = typeof message.sessionId === 'string' ? message.sessionId : null
+      info.isVisible = message.isVisible === true
+
+      if (macAlerts.markViewed(viewing(), now())) {
+        scheduleBroadcast()
+      }
+    }
+  }
+
   const handlePanelApi = async (request: IncomingMessage, response: ServerResponse, url: URL) => {
     if (!isPanelRequestAllowed(request, settings)) {
       return json(response, 401, { error: 'unauthorized' })
@@ -500,6 +587,10 @@ export function createApp(options: AppOptions): App {
 
     if (parts[2] === 'telegram') {
       return handleTelegram(request, response, parts[3])
+    }
+
+    if (url.pathname === '/api/panel/mac-alerts') {
+      return handleMacAlerts(request, response)
     }
 
     if (url.pathname === '/api/panel/state' && request.method === 'GET') {
@@ -794,8 +885,19 @@ export function createApp(options: AppOptions): App {
 
     sockets.handleUpgrade(request, socket, head, ws => {
       clients.add(ws)
+      clientInfo.set(ws, { isApp: false, sessionId: null, isVisible: false })
       ws.send(JSON.stringify({ type: 'state', state: snapshot() }))
-      ws.on('close', () => clients.delete(ws))
+      ws.on('message', data => handleClientMessage(ws, data))
+      ws.on('close', () => {
+        const wasApp = clientInfo.get(ws)?.isApp === true
+
+        clients.delete(ws)
+        clientInfo.delete(ws)
+
+        if (wasApp) {
+          scheduleBroadcast()
+        }
+      })
     })
   })
 
@@ -830,6 +932,23 @@ export function createApp(options: AppOptions): App {
         server.close(() => done())
         server.closeAllConnections()
       }),
+  }
+}
+
+type ClientInfo = {
+  isApp: boolean
+  sessionId: string | null
+  isVisible: boolean
+}
+
+function alertView(alert: Alert) {
+  return {
+    id: alert.id,
+    sessionId: alert.sessionId,
+    event: alert.event,
+    title: alert.title,
+    body: alert.body,
+    createdAt: alert.createdAt,
   }
 }
 

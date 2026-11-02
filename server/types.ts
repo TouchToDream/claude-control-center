@@ -191,3 +191,18 @@ export type Settings = {
   testCommands: string[]
   modDir: string | null
 }
+
+export const MAC_EVENTS = ['question', 'permission', 'done', 'turnError', 'testsFailed', 'gone', 'limit'] as const
+
+export type MacEvent = (typeof MAC_EVENTS)[number]
+
+export type Alert = {
+  id: string
+  sessionId: string | null
+  event: MacEvent
+  title: string
+  body: string
+  askId: string | null
+  createdAt: number
+  readAt: number | null
+}

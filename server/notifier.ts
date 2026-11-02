@@ -1,25 +1,24 @@
+import { askLabel, EventDetector, letter, LIMIT_NAMES, testsLabel } from './events.ts'
+import type { DetectedEvent, SessionWithStatus } from './events.ts'
 import type { Store } from './store.ts'
 import type { Secrets } from './secrets.ts'
 import { TelegramError } from './telegram.ts'
 import type { TelegramApi } from './telegram.ts'
-import type { Ask, RateLimit, SessionState, Status } from './types.ts'
+import type { Ask, RateLimit } from './types.ts'
+
+export type { SessionWithStatus } from './events.ts'
 
 const SETTINGS_KEY = 'telegram'
 const LIMIT_MARKS_KEY = 'telegramLimits'
 const WAIT_BEFORE_SENDING_MS = 45_000
 const LONG_TURN_MS = 2 * 60_000
-const LIMIT_LEVELS = [95, 80]
 const QUEUE_LIMIT = 50
-const BUSY: readonly Status[] = ['work', 'tests', 'ask']
-const FREE: readonly Status[] = ['waiting', 'chat']
 
 export const NOTIFY_EVENTS = ['ask', 'testsFailed', 'turnError', 'crashed', 'done', 'testsPassed', 'limit'] as const
 
 export type NotifyEvent = (typeof NOTIFY_EVENTS)[number]
 
 const LOUD_EVENTS: ReadonlySet<NotifyEvent> = new Set(['ask', 'testsFailed', 'turnError', 'crashed'])
-
-const LIMIT_NAMES: Record<string, string> = { five_hour: '5 годин', seven_day: '7 днів' }
 
 export type TelegramSettings = {
   enabled: boolean
@@ -28,15 +27,6 @@ export type TelegramSettings = {
   botName: string | null
   events: Record<NotifyEvent, boolean>
   projects: string[]
-}
-
-export type SessionWithStatus = SessionState & { status: Status }
-
-type Seen = {
-  status: Status
-  endedRunId: string | null
-  hadError: boolean
-  wasEnded: boolean
 }
 
 type Pending = {
@@ -58,46 +48,6 @@ function defaultSettings(): TelegramSettings {
   }
 }
 
-function minutes(ms: number): number {
-  return Math.max(1, Math.round(ms / 60_000))
-}
-
-function letter(session: SessionState, status: string, workedMs: number | null = null): string {
-  const details = [
-    session.branch === null ? null : `Гілка ${session.branch}`,
-    workedMs === null ? null : `працювала ${minutes(workedMs)} хв`,
-    session.files.length === 0 ? null : `змінено файлів: ${session.files.length}`,
-  ].filter(part => part !== null)
-
-  return [
-    `Проєкт: ${session.repoName}`,
-    `Сесія: ${session.name}`,
-    `Статус: ${status}`,
-    ...(details.length === 0 ? [] : [details.join(' · ')]),
-  ].join('\n')
-}
-
-function askLabel(ask: Ask): string {
-  if (ask.kind === 'question') {
-    return 'чекає на відповідь (питання)'
-  }
-
-  return ask.tool === 'ExitPlanMode' ? 'чекає на відповідь (план)' : `чекає на відповідь (дозвіл на ${ask.tool})`
-}
-
-function testsLabel(session: SessionState): string {
-  const run = session.tests
-  const progress = run?.progress ?? null
-
-  if (run?.failed === true) {
-    const counts = progress !== null && progress.total > 0 ? ` (упало ${progress.failed} з ${progress.total})` : ''
-
-    return `тести впали${counts}`
-  }
-
-  return progress !== null && progress.total > 0 ? `тести пройшли (${progress.total})` : 'тести пройшли'
-}
-
 export type NotifierOptions = {
   store: Store
   api: TelegramApi
@@ -108,10 +58,8 @@ export class Notifier {
   private readonly store: Store
   private readonly api: TelegramApi
   private readonly secrets: Secrets
-  private readonly seen = new Map<string, Seen>()
-  private readonly seenAsks = new Set<string>()
+  private readonly detector: EventDetector
   private queue: Pending[] = []
-  private isFirstTick = true
   private isSending = false
   private blockedUntil = 0
   private lastError: string | null = null
@@ -120,6 +68,7 @@ export class Notifier {
     this.store = options.store
     this.api = options.api
     this.secrets = options.secrets
+    this.detector = new EventDetector(options.store, LIMIT_MARKS_KEY)
   }
 
   settings(): TelegramSettings {
@@ -168,16 +117,9 @@ export class Notifier {
   tick(at: number, sessions: readonly SessionWithStatus[], asks: readonly Ask[], limits: readonly RateLimit[]): void {
     const settings = this.settings()
 
-    if (!this.isFirstTick) {
-      this.detectLimits(at, settings, limits)
+    for (const event of this.detector.tick(at, sessions, asks, limits)) {
+      this.consider(at, event, settings)
     }
-
-    for (const session of sessions) {
-      this.detect(at, session, settings)
-    }
-
-    this.detectAsks(at, sessions, asks, settings)
-    this.isFirstTick = false
 
     void this.flush(at, settings).catch(() => {})
   }
@@ -192,100 +134,52 @@ export class Notifier {
     }
   }
 
-  private detect(at: number, session: SessionWithStatus, settings: TelegramSettings): void {
-    const previous = this.seen.get(session.id)
-    const run = session.tests
-    const endedRunId = run?.endedAt === null || run === null ? (previous?.endedRunId ?? null) : run.id
-    const wasEnded = session.endedAt !== null
+  private consider(at: number, event: DetectedEvent, settings: TelegramSettings): void {
+    if (event.kind === 'limit') {
+      const { limit } = event
 
-    this.seen.set(session.id, { status: session.status, endedRunId, hadError: session.turnError, wasEnded })
-
-    if (previous === undefined) {
-      return
-    }
-
-    const add = (event: NotifyEvent, status: string, dueAt = at, isStale = () => false, workedMs: number | null = null) =>
-      this.enqueue(settings, {
-        event,
-        repoRoot: session.repoRoot,
-        text: letter(session, status, workedMs),
-        dueAt,
-        isStale,
+      return this.enqueue(settings, {
+        event: 'limit',
+        repoRoot: null,
+        text: `Ліміт ${LIMIT_NAMES[limit.kind] ?? limit.kind}: використано ${Math.round(limit.percentUsed)}%`,
+        dueAt: at,
+        isStale: () => false,
       })
-
-    if (run !== null && endedRunId !== previous.endedRunId && run.failed !== null) {
-      add(run.failed ? 'testsFailed' : 'testsPassed', testsLabel(session), at, () => false, (run.endedAt as number) - run.startedAt)
     }
 
-    if (session.turnError && !previous.hadError) {
-      add('turnError', 'хід завершився помилкою')
-    }
+    const { session } = event
+    const add = (kind: NotifyEvent, status: string, dueAt = at, isStale = () => false, workedMs: number | null = null) =>
+      this.enqueue(settings, { event: kind, repoRoot: session.repoRoot, text: letter(session, status, workedMs), dueAt, isStale })
 
-    if (wasEnded && !previous.wasEnded && session.endReason === 'process_gone' && BUSY.includes(previous.status)) {
-      add('crashed', 'сесія несподівано закрилася')
-    }
+    switch (event.kind) {
+      case 'ask': {
+        const { ask } = event
 
-    const workedMs = (session.lastTurnEndAt ?? 0) - (session.lastTurnStartAt ?? 0)
-    const hasFinished = BUSY.includes(previous.status) && FREE.includes(session.status)
-
-    if (hasFinished && session.turnEndReason === 'answer' && workedMs >= LONG_TURN_MS) {
-      const startedAt = session.lastTurnStartAt
-
-      add(
-        'done',
-        'завершила роботу',
-        at + WAIT_BEFORE_SENDING_MS,
-        () => session.turnId !== null || session.lastTurnStartAt !== startedAt,
-        workedMs,
-      )
-    }
-  }
-
-  private detectAsks(
-    at: number,
-    sessions: readonly SessionWithStatus[],
-    asks: readonly Ask[],
-    settings: TelegramSettings,
-  ): void {
-    for (const ask of asks) {
-      if (this.seenAsks.has(ask.id)) {
-        continue
+        return add('ask', askLabel(ask), at + WAIT_BEFORE_SENDING_MS, () => this.store.ask(ask.id)?.status !== 'pending')
       }
+      case 'testsFailed':
+      case 'testsPassed':
+        return add(event.kind, testsLabel(session), at, () => false, event.workedMs)
+      case 'turnError':
+        return add('turnError', 'хід завершився помилкою')
+      case 'crashed':
+        return add('crashed', 'сесія несподівано закрилася')
+      case 'lost':
+        return
+      case 'done': {
+        if (event.workedMs < LONG_TURN_MS) {
+          return
+        }
 
-      this.seenAsks.add(ask.id)
+        const { startedAt } = event
 
-      const session = sessions.find(candidate => candidate.id === ask.sessionId)
-
-      if (!this.isFirstTick && session !== undefined) {
-        this.enqueue(settings, {
-          event: 'ask',
-          repoRoot: session.repoRoot,
-          text: letter(session, askLabel(ask)),
-          dueAt: at + WAIT_BEFORE_SENDING_MS,
-          isStale: () => this.store.ask(ask.id)?.status !== 'pending',
-        })
-      }
-    }
-  }
-
-  private detectLimits(at: number, settings: TelegramSettings, limits: readonly RateLimit[]): void {
-    const marks = JSON.parse(this.store.meta(LIMIT_MARKS_KEY) ?? '{}') as Record<string, { resetsAt?: string; level: number }>
-
-    for (const limit of limits) {
-      const level = LIMIT_LEVELS.find(candidate => limit.percentUsed >= candidate)
-      const mark = marks[limit.kind]
-      const isSameWindow = mark?.resetsAt === limit.resetsAt
-
-      if (level !== undefined && (!isSameWindow || (mark?.level ?? 0) < level)) {
-        marks[limit.kind] = { resetsAt: limit.resetsAt, level }
-        this.store.setMeta(LIMIT_MARKS_KEY, JSON.stringify(marks))
-        this.enqueue(settings, {
-          event: 'limit',
-          repoRoot: null,
-          text: `Ліміт ${LIMIT_NAMES[limit.kind] ?? limit.kind}: використано ${Math.round(limit.percentUsed)}%`,
-          dueAt: at,
-          isStale: () => false,
-        })
+        return add(
+          'done',
+          'завершила роботу',
+          at + WAIT_BEFORE_SENDING_MS,
+          () => session.turnId !== null || session.lastTurnStartAt !== startedAt,
+          event.workedMs,
+        )
       }
     }
   }

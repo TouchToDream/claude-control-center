@@ -3,6 +3,7 @@ import { telegramAction } from './api.ts'
 import { Icon } from './Icon.tsx'
 import { ago, isLive, isRunning, repoKey, STATUS_LABEL } from './model.ts'
 import type { SessionView, Snapshot, Status, Unbridged } from './model.ts'
+import { unreadSessions } from './unread.ts'
 
 const CLOSED_LIMIT = 5
 
@@ -61,14 +62,20 @@ function lastActivity(session: SessionView): number {
   return Math.max(session.lastTurnEndAt ?? 0, session.lastTurnStartAt ?? 0, session.lastUserAt ?? 0, session.startedAt)
 }
 
+function UnreadDot() {
+  return <span className="unread-dot" role="img" aria-label="Є непрочитані сповіщення" title="Є непрочитані сповіщення" />
+}
+
 function LiveRow({
   session,
   isSelected,
+  hasUnread,
   clock,
   onOpen,
 }: {
   session: SessionView
   isSelected: boolean
+  hasUnread: boolean
   clock: number
   onOpen: (id: string) => void
 }) {
@@ -83,6 +90,7 @@ function LiveRow({
     >
       <span className={`dot status-${session.status} ${isRunning(session) ? 'pulse' : ''}`} />
       <span className="nav-name ellipsis">{session.name}</span>
+      {hasUnread && <UnreadDot />}
       {short === undefined ? (
         <span className="nav-meta mono muted">{ago(clock - lastActivity(session))}</span>
       ) : (
@@ -95,11 +103,13 @@ function LiveRow({
 function ClosedRow({
   session,
   isSelected,
+  hasUnread,
   clock,
   onOpen,
 }: {
   session: SessionView
   isSelected: boolean
+  hasUnread: boolean
   clock: number
   onOpen: (id: string) => void
 }) {
@@ -112,6 +122,7 @@ function ClosedRow({
     >
       <span className="dot hollow" />
       <span className="nav-name ellipsis">{session.name}</span>
+      {hasUnread && <UnreadDot />}
       <span className="nav-meta mono">{ago(clock - closedAt(session))}</span>
     </button>
   )
@@ -120,11 +131,13 @@ function ClosedRow({
 function ClosedSessions({
   sessions,
   selected,
+  unread,
   clock,
   onOpen,
 }: {
   sessions: SessionView[]
   selected: string | null
+  unread: ReadonlySet<string>
   clock: number
   onOpen: (id: string) => void
 }) {
@@ -136,7 +149,14 @@ function ClosedSessions({
     <div className="repo-closed">
       <div className="repo-closed-label">Закриті · {sessions.length}</div>
       {shown.map(session => (
-        <ClosedRow key={session.id} session={session} isSelected={session.id === selected} clock={clock} onOpen={onOpen} />
+        <ClosedRow
+          key={session.id}
+          session={session}
+          isSelected={session.id === selected}
+          hasUnread={unread.has(session.id)}
+          clock={clock}
+          onOpen={onOpen}
+        />
       ))}
       {hidden > 0 && (
         <button type="button" className="ghost more" onClick={() => setIsExpanded(true)}>
@@ -181,6 +201,7 @@ export function Sidebar({ snapshot, selected, clock, onOpen, onNewSession }: Pro
   const allGroups = groupByRepo(snapshot.sessions)
   const groups = showClosed ? allGroups : allGroups.filter(group => group.live.length > 0)
   const closedCount = allGroups.reduce((sum, group) => sum + group.closed.length, 0)
+  const unread = unreadSessions(snapshot.alerts)
 
   return (
     <nav className="sidebar" aria-label="Репозиторії та сесії">
@@ -218,10 +239,17 @@ export function Sidebar({ snapshot, selected, clock, onOpen, onNewSession }: Pro
               </button>
             </div>
             {group.live.map(session => (
-              <LiveRow key={session.id} session={session} isSelected={session.id === selected} clock={clock} onOpen={onOpen} />
+              <LiveRow
+                key={session.id}
+                session={session}
+                isSelected={session.id === selected}
+                hasUnread={unread.has(session.id)}
+                clock={clock}
+                onOpen={onOpen}
+              />
             ))}
             {showClosed && group.closed.length > 0 && (
-              <ClosedSessions sessions={group.closed} selected={selected} clock={clock} onOpen={onOpen} />
+              <ClosedSessions sessions={group.closed} selected={selected} unread={unread} clock={clock} onOpen={onOpen} />
             )}
           </section>
         ))}

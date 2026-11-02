@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { connect, loadRows, loadTimeline } from './api.ts'
+import { connect, loadRows, loadTimeline, report } from './api.ts'
+import { installAppBridge, isInApp } from './appBridge.ts'
+import { loadDraft } from './drafts.ts'
 import type { ServerMessage } from './api.ts'
 import { Header } from './Header.tsx'
 import type { OutboxItem, Row, Snapshot, TimelineEntry } from './model.ts'
 import { NewSessionDialog } from './NewSessionDialog.tsx'
 import { Overview } from './Overview.tsx'
+import { nextSelection } from './selection.ts'
 import { SessionScreen } from './SessionScreen.tsx'
 import { Sidebar } from './Sidebar.tsx'
+import { browserStore } from './storage.ts'
 import { TelegramDialog } from './TelegramDialog.tsx'
 
 const TIMELINE_REFRESH_MS = 20_000
@@ -21,6 +25,22 @@ function mergeOutbox(current: readonly OutboxItem[], item: OutboxItem): OutboxIt
   return current.some(known => known.id === item.id)
     ? current.map(known => (known.id === item.id ? item : known))
     : [...current, item]
+}
+
+const IS_IN_APP = isInApp()
+
+function isPageInView(): boolean {
+  return document.visibilityState === 'visible' && document.hasFocus()
+}
+
+function openRequested(sessionId: string | null, onlyIfNoDraft: boolean): void {
+  const current = selectedFromHash()
+  const draft = current === null ? '' : loadDraft(browserStore(), current)
+  const next = nextSelection(current, sessionId, onlyIfNoDraft, draft)
+
+  if (next !== current) {
+    location.hash = next ?? ''
+  }
 }
 
 function selectedFromHash(): string | null {
@@ -38,7 +58,11 @@ export function App() {
   const [timeline, setTimeline] = useState<TimelineEntry[]>([])
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null)
   const [isTelegramOpen, setIsTelegramOpen] = useState(false)
+  const [isSessionsOpen, setIsSessionsOpen] = useState(false)
   const [clock, setClock] = useState(Date.now())
+  const [isAppShown, setIsAppShown] = useState(false)
+  const [isPageVisible, setIsPageVisible] = useState(isPageInView)
+  const isVisible = IS_IN_APP ? isAppShown : isPageVisible
 
   const handleMessage = useCallback(
     (message: ServerMessage) => {
@@ -71,6 +95,24 @@ export function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
+  useEffect(() => installAppBridge({ onShow: openRequested, onShown: setIsAppShown }), [])
+
+  useEffect(() => {
+    const update = () => setIsPageVisible(isPageInView())
+
+    window.addEventListener('focus', update)
+    window.addEventListener('blur', update)
+    document.addEventListener('visibilitychange', update)
+
+    return () => {
+      window.removeEventListener('focus', update)
+      window.removeEventListener('blur', update)
+      document.removeEventListener('visibilitychange', update)
+    }
+  }, [])
+
+  useEffect(() => report({ type: 'viewing', sessionId: selectedFromHash(), isVisible }), [selected, isVisible])
+
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 1000)
 
@@ -100,6 +142,7 @@ export function App() {
   }, [selected])
 
   const open = useCallback((id: string | null) => {
+    setIsSessionsOpen(false)
     location.hash = id ?? ''
   }, [])
 
@@ -119,12 +162,14 @@ export function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app ${isSessionsOpen ? 'sessions-open' : ''}`}>
       <Header
         snapshot={snapshot}
         isConnected={isConnected}
         onHome={() => open(null)}
         onTelegram={() => setIsTelegramOpen(true)}
+        isSessionsOpen={isSessionsOpen}
+        onSessions={() => setIsSessionsOpen(value => !value)}
       />
       <div className="columns">
         <Sidebar
@@ -150,7 +195,7 @@ export function App() {
           )}
         </main>
       </div>
-      {isTelegramOpen && <TelegramDialog onClose={() => setIsTelegramOpen(false)} />}
+      {isTelegramOpen && <TelegramDialog macAlerts={snapshot.macAlerts} onClose={() => setIsTelegramOpen(false)} />}
       {newSessionCwd !== null && (
         <NewSessionDialog cwd={newSessionCwd} onClose={() => setNewSessionCwd(null)} />
       )}

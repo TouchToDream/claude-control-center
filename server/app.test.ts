@@ -818,3 +818,102 @@ test('a background session starts only in a known folder', async () => {
 
   assert.equal(response.status, 422)
 })
+
+type AlertMessage = { type: string; alert?: { id: string; sessionId: string | null; event: string } }
+
+function openSocket(): Promise<{ socket: WebSocket; messages: AlertMessage[] }> {
+  return new Promise((done, fail) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { cookie: `ccc_key=${KEY}`, origin: base } })
+    const messages: AlertMessage[] = []
+
+    socket.on('message', data => messages.push(JSON.parse(String(data)) as AlertMessage))
+    socket.on('open', () => done({ socket, messages }))
+    socket.on('error', fail)
+  })
+}
+
+async function waitFor<T>(read: () => Promise<T> | T, isDone: (value: T) => boolean, ms = 4000): Promise<T> {
+  const started = Date.now()
+  let value = await read()
+
+  while (!isDone(value) && Date.now() - started < ms) {
+    await new Promise(done => setTimeout(done, 50))
+    value = await read()
+  }
+
+  return value
+}
+
+const waitForTick = () => new Promise(done => setTimeout(done, 1100))
+
+const macAlerts = async () =>
+  (await (await panel('/api/panel/mac-alerts')).json()) as { enabled: boolean; events: Record<string, boolean>; isAppRunning: boolean }
+
+const unreadAlerts = async () =>
+  ((await (await panel('/api/panel/state')).json()) as { alerts: { id: string; sessionId: string | null }[] }).alerts
+
+test('the mac app says hello and the panel sees it running', async () => {
+  const { socket } = await openSocket()
+
+  assert.equal((await macAlerts()).isAppRunning, false)
+
+  socket.send(JSON.stringify({ type: 'hello', client: 'mac-app' }))
+  assert.equal((await waitFor(macAlerts, view => view.isAppRunning)).isAppRunning, true)
+
+  socket.close()
+  assert.equal((await waitFor(macAlerts, view => !view.isAppRunning)).isAppRunning, false)
+})
+
+test('a new ask reaches the socket as an alert and stays unread', async () => {
+  const { socket, messages } = await openSocket()
+
+  socket.send('not json')
+  await waitForTick()
+  await createAsk('alerted', 'ask-alerted')
+
+  const found = await waitFor(
+    () => messages.find(message => message.type === 'alert' && message.alert?.sessionId === 'alerted'),
+    message => message !== undefined,
+  )
+
+  assert.equal(found?.alert?.event, 'permission')
+  assert.ok((await unreadAlerts()).some(alert => alert.id === found?.alert?.id))
+  socket.close()
+})
+
+test('a session in view raises no alert and its old alerts are read', async () => {
+  const { socket, messages } = await openSocket()
+
+  socket.send(JSON.stringify({ type: 'viewing', sessionId: 'viewed', isVisible: true }))
+  await new Promise(done => setTimeout(done, 100))
+  await createAsk('viewed', 'ask-viewed')
+  await createAsk('later', 'ask-later')
+
+  await waitFor(
+    () => messages.find(message => message.alert?.sessionId === 'later'),
+    message => message !== undefined,
+  )
+  assert.equal(messages.some(message => message.alert?.sessionId === 'viewed'), false)
+
+  socket.send(JSON.stringify({ type: 'viewing', sessionId: 'later', isVisible: true }))
+
+  const unread = await waitFor(unreadAlerts, list => !list.some(alert => alert.sessionId === 'later'))
+
+  assert.equal(unread.some(alert => alert.sessionId === 'later'), false)
+  socket.close()
+})
+
+test('mac alert settings keep only known switches', async () => {
+  const response = await panel('/api/panel/mac-alerts', {
+    method: 'POST',
+    body: JSON.stringify({ events: { done: false, nope: true, limit: 'yes' } }),
+  })
+  const view = (await response.json()) as { events: Record<string, unknown> }
+
+  assert.equal(response.status, 200)
+  assert.equal(view.events.done, false)
+  assert.equal(view.events.limit, false)
+  assert.equal('nope' in view.events, false)
+
+  await panel('/api/panel/mac-alerts', { method: 'POST', body: JSON.stringify({ events: { done: true } }) })
+})
