@@ -1,12 +1,13 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { abortTurn, cancelOutbox, dismissOutbox, forceOutbox, loadCommands, loadOlderRows, sendMessage } from './api.ts'
+import { abortTurn, cancelOutbox, dismissOutbox, forceOutbox, loadCommands, loadOlderRows, sendMessage, uploadFile } from './api.ts'
+import { composeMessage, previewUrl, restoreAttachments, shortLabel, splitAttachments } from './attachments.ts'
 import { AskCard } from './AskCard.tsx'
 import { DiffDialog } from './DiffDialog.tsx'
-import { loadDraft, saveDraft } from './drafts.ts'
+import { loadAttachments, loadDraft, saveAttachments, saveDraft } from './drafts.ts'
 import { Icon } from './Icon.tsx'
-import type { OutboxItem, Row, SessionCommand, SessionView, Snapshot } from './model.ts'
+import type { Attachment, OutboxItem, Row, SessionCommand, SessionView, Snapshot } from './model.ts'
 import { ago, canForceMessage, dropReason, isRunning, STATUS_LABEL } from './model.ts'
 import { ModelControls } from './ModelControls.tsx'
 import { CloseDialog, RenameForm, ResumeDialog } from './SessionActions.tsx'
@@ -26,13 +27,37 @@ const AssistantText = memo(function AssistantText({ text }: { text: string }) {
   )
 })
 
+function RowAttachments({ paths }: { paths: readonly string[] }) {
+  return (
+    <div className="row-attachments">
+      {paths.map(path => {
+        const url = previewUrl(path)
+        const name = path.split('/').at(-1) ?? path
+
+        return url === null ? (
+          <span key={path} className="attachment-name mono small" title={path}>
+            {name}
+          </span>
+        ) : (
+          <a key={path} href={url} target="_blank" rel="noreferrer" title={name}>
+            <img className="attachment-preview" src={url} alt={name} />
+          </a>
+        )
+      })}
+    </div>
+  )
+}
+
 function RowItem({ row }: { row: Row }) {
   if (row.kind === 'user') {
+    const { text, paths } = splitAttachments(row.text)
+
     return (
       <div className="row-user">
         <div className="bubble">
           {row.viaPanel && <div className="small muted">з панелі</div>}
-          {row.text}
+          {text}
+          {paths.length > 0 && <RowAttachments paths={paths} />}
         </div>
       </div>
     )
@@ -178,7 +203,7 @@ function QueuedNote({
     return (
       <div className="outbox small">
         <span>
-          Надсилається: «{item.text.slice(0, 100)}»
+          Надсилається: «{shortLabel(item.text, 100)}»
           {!canForceMessage(session) && (
             <span className="muted"> Щоб скасовувати й редагувати чергу, виконай у цій сесії /reload-plugins.</span>
           )}
@@ -190,7 +215,7 @@ function QueuedNote({
   return (
     <div className="outbox small">
       <span>
-        {isExit ? 'Сесія закриється, щойно завершить поточний хід.' : `У черзі: «${item.text.slice(0, 100)}»`}
+        {isExit ? 'Сесія закриється, щойно завершить поточний хід.' : `У черзі: «${shortLabel(item.text, 100)}»`}
       </span>
       <span className="outbox-actions">
         {canForce && (
@@ -258,7 +283,7 @@ function OutboxNotes({
           <div key={item.id} className="outbox failed small">
             <span>
               Не доставлено: {dropReason(item.reason)}
-              <span className="muted"> «{item.text.slice(0, 80)}»</span>
+              <span className="muted"> «{shortLabel(item.text, 80)}»</span>
             </span>
             <span className="outbox-actions">
               <button type="button" className="ghost mini" onClick={() => retry(item)}>
@@ -303,8 +328,49 @@ function matchingCommands(draft: string, commands: readonly SessionCommand[]): S
     .slice(0, MENU_LIMIT)
 }
 
-function Composer({ session, draft, onDraft }: { session: SessionView; draft: string; onDraft: (text: string) => void }) {
+const UPLOAD_LIMIT = 20 * 1024 * 1024
+
+function hasFiles(event: React.DragEvent): boolean {
+  return [...event.dataTransfer.types].includes('Files')
+}
+
+function AttachmentChip({ item, onRemove }: { item: Attachment; onRemove: () => void }) {
+  const extension = item.name.split('.').at(-1)?.toUpperCase() ?? ''
+
+  return (
+    <div className={`attachment ${item.status}`} title={item.error ?? item.name}>
+      {item.isImage && item.url !== null ? (
+        <img className="attachment-thumb" src={item.url} alt="" />
+      ) : (
+        <span className="attachment-type mono">{extension.slice(0, 4)}</span>
+      )}
+      <span className="attachment-label">
+        <span className="ellipsis small">{item.name}</span>
+        {item.status === 'uploading' && <span className="small muted">завантаження…</span>}
+        {item.status === 'failed' && <span className="small text-fail">{item.error}</span>}
+      </span>
+      <button type="button" className="ghost attachment-remove" aria-label={`Прибрати ${item.name}`} onClick={onRemove}>
+        <Icon name="close" />
+      </button>
+    </div>
+  )
+}
+
+type ComposerProps = {
+  session: SessionView
+  draft: string
+  onDraft: (text: string) => void
+  attachments: Attachment[]
+  onAttachments: (update: (current: Attachment[]) => Attachment[]) => void
+}
+
+function Composer({ session, draft, onDraft, attachments, onAttachments }: ComposerProps) {
   const [error, setError] = useState<string | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const picker = useRef<HTMLInputElement>(null)
+  const ready = attachments.filter(item => item.status === 'ready' && item.path !== null)
+  const isUploading = attachments.some(item => item.status === 'uploading')
+  const canSend = !isUploading && (draft.trim() !== '' || ready.length > 0)
   const [commands, setCommands] = useState<SessionCommand[]>([])
   const [highlighted, setHighlighted] = useState(0)
   const [isMenuClosed, setIsMenuClosed] = useState(false)
@@ -316,17 +382,52 @@ function Composer({ session, draft, onDraft }: { session: SessionView; draft: st
     void loadCommands(session.id).then(setCommands)
   }, [session.id, draft.startsWith('/')])
 
-  const submit = () => {
-    const text = draft.trim()
+  const change = (key: string, update: Partial<Attachment>) =>
+    onAttachments(current => current.map(item => (item.key === key ? { ...item, ...update } : item)))
 
-    if (text === '') {
+  const addFiles = (files: readonly File[]) => {
+    for (const file of files) {
+      const key = crypto.randomUUID()
+      const name = file.name === '' ? 'знімок.png' : file.name
+      const isTooLarge = file.size > UPLOAD_LIMIT
+
+      onAttachments(current => [
+        ...current,
+        {
+          key,
+          name,
+          status: isTooLarge ? 'failed' : 'uploading',
+          path: null,
+          url: null,
+          isImage: file.type.startsWith('image/'),
+          error: isTooLarge ? 'більше 20 МБ' : null,
+        },
+      ])
+
+      if (!isTooLarge) {
+        uploadFile(session.id, file)
+          .then(upload => change(key, { status: 'ready', name: upload.name, path: upload.path, url: upload.url, isImage: upload.isImage }))
+          .catch((failure: Error) =>
+            change(key, { status: 'failed', error: failure.message === 'too_large' ? 'більше 20 МБ' : 'не завантажився' }),
+          )
+      }
+    }
+  }
+
+  const submit = () => {
+    if (!canSend) {
       return
     }
 
+    const text = composeMessage(draft, ready.map(item => item.path as string))
+    const kept = draft
+
     onDraft('')
+    onAttachments(() => [])
     setError(null)
     sendMessage(session.id, text).catch(() => {
-      onDraft(text)
+      onDraft(kept)
+      onAttachments(() => ready)
       setError('Сервіс не прийняв повідомлення')
     })
   }
@@ -365,8 +466,33 @@ function Composer({ session, draft, onDraft }: { session: SessionView; draft: st
   }
 
   return (
-    <div className="composer">
+    <div
+      className={`composer ${isDragging ? 'dragging' : ''}`}
+      onDragOver={event => {
+        if (hasFiles(event)) {
+          event.preventDefault()
+          setIsDragging(true)
+        }
+      }}
+      onDragLeave={() => setIsDragging(false)}
+      onDrop={event => {
+        event.preventDefault()
+        setIsDragging(false)
+        addFiles([...event.dataTransfer.files])
+      }}
+    >
       {error !== null && <p className="small text-fail">{error}</p>}
+      {attachments.length > 0 && (
+        <div className="attachments">
+          {attachments.map(item => (
+            <AttachmentChip
+              key={item.key}
+              item={item}
+              onRemove={() => onAttachments(current => current.filter(other => other.key !== item.key))}
+            />
+          ))}
+        </div>
+      )}
       {matches.length > 0 && (
         <div className="command-menu" role="listbox" aria-label="Команди сесії">
           {matches.map((command, index) => (
@@ -387,6 +513,25 @@ function Composer({ session, draft, onDraft }: { session: SessionView; draft: st
         </div>
       )}
       <div className="composer-row">
+        <button
+          type="button"
+          className="action attach"
+          aria-label="Додати файл або скріншот"
+          title="Додати файл або скріншот. Можна вставити з буфера чи перетягнути"
+          onClick={() => picker.current?.click()}
+        >
+          <Icon name="clip" />
+        </button>
+        <input
+          ref={picker}
+          type="file"
+          multiple
+          hidden
+          onChange={event => {
+            addFiles([...(event.target.files ?? [])])
+            event.target.value = ''
+          }}
+        />
         <textarea
           ref={field}
           rows={2}
@@ -399,8 +544,16 @@ function Composer({ session, draft, onDraft }: { session: SessionView; draft: st
             setIsMenuClosed(false)
           }}
           onKeyDown={onKeyDown}
+          onPaste={event => {
+            const files = [...event.clipboardData.files]
+
+            if (files.length > 0) {
+              event.preventDefault()
+              addFiles(files)
+            }
+          }}
         />
-        <button type="button" className="primary" disabled={draft.trim() === ''} onClick={submit}>
+        <button type="button" className="primary" disabled={!canSend} onClick={submit}>
           Надіслати
         </button>
       </div>
@@ -493,11 +646,13 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
   const [isClosing, setIsClosing] = useState(false)
   const [isResuming, setIsResuming] = useState(false)
   const [draft, setDraft] = useState(() => loadDraft(browserStore(), session.id))
+  const [attachments, setAttachments] = useState<Attachment[]>(() => loadAttachments(browserStore(), session.id))
   const [diffPath, setDiffPath] = useState<string | null>(null)
   const [isSideOpen, setIsSideOpen] = useState(false)
   const asks = snapshot.asks.filter(ask => ask.sessionId === session.id)
 
   useEffect(() => saveDraft(browserStore(), session.id, draft), [session.id, draft])
+  useEffect(() => saveAttachments(browserStore(), session.id, attachments), [session.id, attachments])
   const run = session.tests
   const showTests = run !== null && (run.endedAt === null || run.failed === true)
   const isOffline = session.status === 'offline'
@@ -570,11 +725,26 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
           {asks.map(ask => (
             <AskCard key={ask.id} ask={ask} session={session} />
           ))}
-          <OutboxNotes session={session} outbox={outbox} onEdit={setDraft} />
+          <OutboxNotes
+            session={session}
+            outbox={outbox}
+            onEdit={message => {
+              const { text, paths } = splitAttachments(message)
+
+              setDraft(text)
+              setAttachments(restoreAttachments(paths))
+            }}
+          />
           {isOffline ? (
             <ClosedNote session={session} clock={clock} />
           ) : (
-            <Composer session={session} draft={draft} onDraft={setDraft} />
+            <Composer
+              session={session}
+              draft={draft}
+              onDraft={setDraft}
+              attachments={attachments}
+              onAttachments={setAttachments}
+            />
           )}
         </div>
       </div>

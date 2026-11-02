@@ -122,6 +122,29 @@ final class WebPanel: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMess
         return nil
     }
 
+    func webView(
+        _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        let panel = NSOpenPanel()
+
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+
+        guard let window = webView.window else {
+            completionHandler(panel.runModal() == .OK ? panel.urls : nil)
+
+            return
+        }
+
+        panel.beginSheetModal(for: window) { response in
+            completionHandler(response == .OK ? panel.urls : nil)
+        }
+    }
+
     private func isOwn(_ url: URL) -> Bool {
         url.scheme == "about" || (url.host == "127.0.0.1" && url.port == config?.port)
     }

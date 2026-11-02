@@ -18,6 +18,7 @@
     "web/src/drafts.ts",
     "web/src/selection.ts",
     "web/src/**/*.test.ts",
-    "web/src/unread.ts"
+    "web/src/unread.ts",
+    "web/src/attachments.ts"
   ]
 }

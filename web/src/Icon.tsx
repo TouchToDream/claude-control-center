@@ -9,6 +9,7 @@ const PATHS = {
   bell: 'M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 1.5H5l1.5-1.5zM10 20.5a2.2 2.2 0 0 0 4 0',
   sliders: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
   send: 'M4 11.5L20 4l-3.5 16-4.5-6-8-2.5zM12 14l8-10',
+  clip: 'M16.5 7.5l-7 7a2 2 0 0 0 2.8 2.8l7.4-7.4a4 4 0 0 0-5.6-5.6L6.6 11.8a6 6 0 0 0 8.5 8.5l5.4-5.4',
 }
 
 export function Icon({ name }: { name: keyof typeof PATHS }) {

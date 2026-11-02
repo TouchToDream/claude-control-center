@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { loadDraft, saveDraft } from './drafts.ts'
+import { loadAttachments, loadDraft, saveAttachments, saveDraft } from './drafts.ts'
 import type { KeyValueStore } from './drafts.ts'
 
 function memory(): KeyValueStore & { data: Map<string, string> } {
@@ -38,4 +38,21 @@ test('a broken storage gives an empty draft and does not throw', () => {
   assert.equal(loadDraft(broken, 's1'), '')
   assert.equal(loadDraft(null, 's1'), '')
   assert.doesNotThrow(() => saveDraft(null, 's1', 'x'))
+})
+
+test('ready attachments survive with the draft, unfinished ones do not', () => {
+  const store = memory()
+  const ready = { key: 'a', name: 'shot.png', status: 'ready' as const, path: '/u/s1/shot.png', url: '/api/panel/uploads/s1/shot.png', isImage: true, error: null }
+  const uploading = { ...ready, key: 'b', status: 'uploading' as const, path: null, url: null }
+
+  saveAttachments(store, 's1', [ready, uploading])
+
+  assert.deepEqual(loadAttachments(store, 's1'), [ready])
+  assert.deepEqual(loadAttachments(store, 's2'), [])
+
+  saveAttachments(store, 's1', [])
+
+  assert.equal(store.data.has('ccc.attachments.s1'), false)
+  store.data.set('ccc.attachments.s3', 'not json')
+  assert.deepEqual(loadAttachments(store, 's3'), [])
 })

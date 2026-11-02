@@ -41,6 +41,24 @@ export type Unbridged = {
   status: string | null
 }
 
+export type Attachment = {
+  key: string
+  name: string
+  status: 'uploading' | 'ready' | 'failed'
+  path: string | null
+  url: string | null
+  isImage: boolean
+  error: string | null
+}
+
+export type UploadView = {
+  name: string
+  path: string
+  size: number
+  isImage: boolean
+  url: string
+}
+
 export type MacEvent = 'question' | 'permission' | 'done' | 'turnError' | 'testsFailed' | 'gone' | 'limit'
 
 export type AlertView = {

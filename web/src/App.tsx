@@ -98,6 +98,22 @@ export function App() {
   useEffect(() => installAppBridge({ onShow: openRequested, onShown: setIsAppShown }), [])
 
   useEffect(() => {
+    const stopFileDrop = (event: DragEvent) => {
+      if (event.dataTransfer?.types.includes('Files')) {
+        event.preventDefault()
+      }
+    }
+
+    window.addEventListener('dragover', stopFileDrop)
+    window.addEventListener('drop', stopFileDrop)
+
+    return () => {
+      window.removeEventListener('dragover', stopFileDrop)
+      window.removeEventListener('drop', stopFileDrop)
+    }
+  }, [])
+
+  useEffect(() => {
     const update = () => setIsPageVisible(isPageInView())
 
     window.addEventListener('focus', update)

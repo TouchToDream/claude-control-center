@@ -17,11 +17,13 @@ import { readRegistry } from './registry.ts'
 import type { RegistryEntry } from './registry.ts'
 import { isTokenFormat } from './secrets.ts'
 import type { Secrets } from './secrets.ts'
+import { homeDirectory } from './settings.ts'
 import { computeStage, computeStatus } from './status.ts'
 import type { Store } from './store.ts'
 import { createTelegramApi, TelegramError } from './telegram.ts'
 import type { TelegramApi } from './telegram.ts'
 import { findOutputFile, readOutput } from './testWatch.ts'
+import { mediaType, pruneUploads, saveUpload, UPLOAD_LIMIT, uploadPath } from './uploads.ts'
 import type {
   Ask,
   ModEvent,
@@ -35,6 +37,7 @@ import type {
 const COOKIE = 'ccc_key'
 const MOD_BODY_LIMIT = 8 * 1024 * 1024
 const PANEL_BODY_LIMIT = 256 * 1024
+const RETENTION_MS = 14 * 24 * 60 * 60 * 1000
 const LONG_POLL_LIMIT_MS = 28_000
 const NAME_LIMIT = 80
 const EXIT_COMMAND = '/exit'
@@ -77,6 +80,8 @@ export type AppOptions = {
   secrets: Secrets
   openFile?: (terminal: string | null, path: string, line: number | null) => Promise<boolean>
   now?: () => number
+  uploadsRoot?: string
+  uploadLimit?: number
 }
 
 export type App = {
@@ -94,6 +99,8 @@ export function createApp(options: AppOptions): App {
   const telegram = options.telegram ?? createTelegramApi()
   const { secrets } = options
   const openFile = options.openFile ?? openInIde
+  const uploadsRoot = options.uploadsRoot ?? join(homeDirectory(), 'uploads')
+  const uploadLimit = options.uploadLimit ?? UPLOAD_LIMIT
   const notifier = new Notifier({ store, api: telegram, secrets })
   const clients = new Set<WebSocket>()
   const macAlerts = new MacAlerts(store)
@@ -318,6 +325,7 @@ export function createApp(options: AppOptions): App {
 
     if (ticks % 3600 === 0) {
       store.prune(at)
+      pruneUploads(uploadsRoot, at - RETENTION_MS)
     }
   }
 
@@ -593,6 +601,22 @@ export function createApp(options: AppOptions): App {
       return handleMacAlerts(request, response)
     }
 
+    if (parts[2] === 'uploads' && parts.length === 5 && request.method === 'GET') {
+      const path = uploadPath(uploadsRoot, safeDecode(parts[3] ?? ''), safeDecode(parts[4] ?? ''))
+
+      if (path === null) {
+        return json(response, 404, { error: 'not_found' })
+      }
+
+      response.writeHead(200, {
+        'Content-Type': mediaType(path),
+        'Cache-Control': 'private, max-age=86400',
+        'X-Content-Type-Options': 'nosniff',
+      })
+
+      return createReadStream(path).pipe(response)
+    }
+
     if (url.pathname === '/api/panel/state' && request.method === 'GET') {
       return json(response, 200, snapshot())
     }
@@ -606,6 +630,14 @@ export function createApp(options: AppOptions): App {
 
       if (session === undefined) {
         return json(response, 404, { error: 'not_found' })
+      }
+
+      if (parts[4] === 'uploads' && request.method === 'POST') {
+        const bytes = await readBytes(request, uploadLimit)
+        const name = safeDecode(String(request.headers['x-file-name'] ?? '')) || 'file'
+        const upload = saveUpload(uploadsRoot, session.id, name, bytes, now())
+
+        return json(response, 200, { upload })
       }
 
       if (parts[4] === 'rows' && request.method === 'GET') {
@@ -994,7 +1026,15 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(JSON.stringify(body))
 }
 
-async function readJson(request: IncomingMessage, limit: number): Promise<unknown> {
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return ''
+  }
+}
+
+async function readBytes(request: IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = []
   let size = 0
 
@@ -1010,8 +1050,14 @@ async function readJson(request: IncomingMessage, limit: number): Promise<unknow
     chunks.push(piece)
   }
 
+  return Buffer.concat(chunks)
+}
+
+async function readJson(request: IncomingMessage, limit: number): Promise<unknown> {
+  const bytes = await readBytes(request, limit)
+
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+    return JSON.parse(bytes.toString('utf8') || '{}')
   } catch {
     throw new HttpError(400, 'invalid_json')
   }

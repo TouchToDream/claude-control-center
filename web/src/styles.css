@@ -1396,6 +1396,91 @@ p {
   gap: 8px;
 }
 
+.composer.dragging {
+  outline: 2px dashed var(--work);
+  outline-offset: -6px;
+}
+
+.composer .attach {
+  flex: 0 0 auto;
+  align-self: stretch;
+  height: auto;
+}
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.attachment {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  padding: 4px 4px 4px 6px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.attachment.failed {
+  border-color: var(--fail);
+}
+
+.attachment-thumb {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.attachment-type {
+  display: grid;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  background: var(--bg);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.attachment-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.attachment-remove {
+  flex: 0 0 auto;
+  padding: 4px;
+}
+
+.row-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.attachment-preview {
+  display: block;
+  max-width: 220px;
+  max-height: 160px;
+  border-radius: 6px;
+}
+
+.attachment-name {
+  padding: 2px 6px;
+  background: var(--bg);
+  border-radius: 4px;
+}
+
 .composer textarea {
   flex: 1 1 auto;
   min-width: 0;

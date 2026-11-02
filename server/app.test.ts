@@ -25,10 +25,11 @@ const stopped: string[][] = []
 const telegramSent: string[] = []
 const opened: unknown[][] = []
 let savedToken: string | null = null
+const uploadsRoot = mkdtempSync(join(tmpdir(), 'ccc-uploads-'))
 
 before(async () => {
   store = new Store(join(mkdtempSync(join(tmpdir(), 'ccc-')), 'test.sqlite'))
-  app = createApp({ store, settings, webRoot: '/nonexistent', registry: () => registryEntries,
+  app = createApp({ store, settings, webRoot: '/nonexistent', registry: () => registryEntries, uploadsRoot, uploadLimit: 1024,
     resume: async (cwd, sessionId) => {
       resumed.push([cwd, sessionId])
 
@@ -916,4 +917,35 @@ test('mac alert settings keep only known switches', async () => {
   assert.equal('nope' in view.events, false)
 
   await panel('/api/panel/mac-alerts', { method: 'POST', body: JSON.stringify({ events: { done: true } }) })
+})
+
+const uploadHeaders = { 'content-type': 'image/png', 'x-file-name': encodeURIComponent('Знімок екрана.png') }
+
+test('an uploaded file is saved for the session and served back', async () => {
+  await hello('upload')
+
+  const response = await panel('/api/panel/sessions/upload/uploads', { method: 'POST', body: 'png bytes', headers: uploadHeaders })
+  const { upload } = (await response.json()) as { upload: { path: string; url: string; isImage: boolean; name: string } }
+  const served = await panel(upload.url)
+
+  assert.equal(response.status, 200)
+  assert.equal(upload.path.startsWith(join(uploadsRoot, 'upload') + '/'), true)
+  assert.equal(upload.name, 'Знімок_екрана.png')
+  assert.equal(upload.isImage, true)
+  assert.equal(served.status, 200)
+  assert.equal(served.headers.get('content-type'), 'image/png')
+  assert.equal(await served.text(), 'png bytes')
+  assert.equal((await fetch(`${base}${upload.url}`)).status, 401)
+})
+
+test('uploads over the limit, of unknown sessions or outside the folder are refused', async () => {
+  await hello('upload')
+
+  const big = await panel('/api/panel/sessions/upload/uploads', { method: 'POST', body: 'x'.repeat(2048), headers: uploadHeaders })
+  const unknown = await panel('/api/panel/sessions/nobody/uploads', { method: 'POST', body: 'x', headers: uploadHeaders })
+  const escape = await panel('/api/panel/uploads/upload/..%2F..%2Fconfig.json')
+
+  assert.equal(big.status, 413)
+  assert.equal(unknown.status, 404)
+  assert.equal(escape.status, 404)
 })

@@ -1,4 +1,4 @@
-import type { MacAlertsView, MacEvent, OutboxItem, Row, SessionCommand, Snapshot, TelegramView, TimelineEntry } from './model.ts'
+import type { MacAlertsView, MacEvent, OutboxItem, UploadView, Row, SessionCommand, Snapshot, TelegramView, TimelineEntry } from './model.ts'
 
 export type ServerMessage =
   | { type: 'state'; state: Snapshot }
@@ -106,6 +106,23 @@ export async function resumeSession(
   const response = await post(`/api/panel/sessions/${sessionId}/resume`, {})
 
   return response.json()
+}
+
+export async function uploadFile(sessionId: string, file: File): Promise<UploadView> {
+  const response = await fetch(`/api/panel/sessions/${encodeURIComponent(sessionId)}/uploads`, {
+    method: 'POST',
+    headers: {
+      'content-type': file.type === '' ? 'application/octet-stream' : file.type,
+      'x-file-name': encodeURIComponent(file.name === '' ? 'file' : file.name),
+    },
+    body: file,
+  })
+
+  if (!response.ok) {
+    throw new Error(response.status === 413 ? 'too_large' : 'upload_failed')
+  }
+
+  return ((await response.json()) as { upload: UploadView }).upload
 }
 
 export async function saveMacAlerts(changes: {
