@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.onHide = { [weak self] in
             self?.hide()
         }
+        panel.onReload = { [weak self] in
+            self?.web.view.reload()
+        }
         web.load()
 
         alerts.requestAuthorization()

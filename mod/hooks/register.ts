@@ -1,7 +1,8 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { clip, redact } from './redact.ts'
+import { withOutputCopy } from './tee.ts'
 
-const MOD_VERSION = '0.8.0'
+const MOD_VERSION = '0.10.0'
 const TICK_MS = 1500
 const FLUSH_MS = 700
 const DOWN_RETRY_MS = 5000
@@ -20,7 +21,7 @@ const SKIPPED_DOORS = new Set(['attachment', 'hook-context', 'queue', 'tool-mess
 const ROW_DOORS = ['prompt', 'command', 'response', 'tool-result', 'delivery', 'compaction', 'notice'] as const
 const PERSON_ONLY_TOOLS = new Set(['ExitPlanMode'])
 const SLASH_COMMAND = /^\/([^\s/]+)(?:\s+([\s\S]*))?$/
-const WANTS_OUTPUT = /test|spec|phpunit|pest|jest|vitest|gh\s+pr/i
+const WANTS_OUTPUT = /test|spec|phpunit|pest|jest|vitest|gh\s+pr|pint|cs-fixer|eslint|lint|prettier|biome|phpstan|analy[sz]e|psalm|\btsc\b|typecheck/i
 const PEER_ENVELOPE = /<cross-session-message[^>]*from-name="([^"]*)"[^>]*>([\s\S]*?)<\/cross-session-message>/
 
 type Dollar = EngineInterface
@@ -797,8 +798,14 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
-    const input = e as unknown as Record<string, unknown>
     const id = e.tool_use_id ?? askId()
+    const original = e as unknown as Record<string, unknown>
+    const copied =
+      tool === 'Bash' && typeof original.command === 'string'
+        ? withOutputCopy(original.command, `/tmp/ccc-${String(id).replace(/[^A-Za-z0-9_-]/g, '')}.log`)
+        : null
+    const call = copied === null ? e : ({ ...e, command: copied } as typeof e)
+    const input = call as unknown as Record<string, unknown>
     const summary = summarize(tool, input)
     const agentId = e.agentId
 
@@ -807,7 +814,7 @@ export const register: Register = on => {
     const ran =
       tool === 'AskUserQuestion'
         ? ((await answerQuestion($, input, () => next(e), next.signal)) as Awaited<ReturnType<typeof next>>)
-        : await next(e)
+        : await next(call)
 
     settleAskOf(tool, summary, $)
     bridge.gitDirty = true

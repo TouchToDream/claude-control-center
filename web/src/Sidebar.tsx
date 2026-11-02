@@ -4,6 +4,7 @@ import { Icon } from './Icon.tsx'
 import { ago, isLive, isRunning, repoKey, STATUS_LABEL } from './model.ts'
 import type { SessionView, Snapshot, Status, Unbridged } from './model.ts'
 import { unreadSessions } from './unread.ts'
+import { isContinued } from './succession.ts'
 
 const CLOSED_LIMIT = 5
 
@@ -35,7 +36,7 @@ type RepoGroup = {
 function groupByRepo(sessions: readonly SessionView[]): RepoGroup[] {
   const groups = new Map<string, RepoGroup>()
 
-  for (const session of sessions) {
+  for (const session of sessions.filter(candidate => !isContinued(sessions, candidate.id))) {
     const key = repoKey(session)
     const group = groups.get(key) ?? { key, name: session.repoName, live: [], closed: [] }
 

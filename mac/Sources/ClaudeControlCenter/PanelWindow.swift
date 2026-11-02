@@ -9,8 +9,10 @@ final class PanelWindow: NSPanel {
         6: (Selector(("undo:")), Selector(("redo:"))),
     ]
     private static let closeKey: UInt16 = 13
+    private static let reloadKey: UInt16 = 15
 
     var onHide: (() -> Void)?
+    var onReload: (() -> Void)?
 
     init() {
         super.init(
@@ -53,6 +55,12 @@ final class PanelWindow: NSPanel {
 
         if event.keyCode == Self.closeKey, flags == .command {
             onHide?()
+
+            return true
+        }
+
+        if event.keyCode == Self.reloadKey, flags == .command {
+            onReload?()
 
             return true
         }

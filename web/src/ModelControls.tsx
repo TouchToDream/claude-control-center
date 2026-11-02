@@ -1,4 +1,5 @@
 import { chooseModel } from './api.ts'
+import { Dropdown } from './Dropdown.tsx'
 import type { SessionView } from './model.ts'
 import { canChooseModel, modelLabel } from './model.ts'
 
@@ -17,6 +18,8 @@ export function ModelControls({ session }: { session: SessionView }) {
   const title = isAvailable
     ? 'Діє лише на цю сесію, з наступного запиту. Глобальні налаштування не змінюються.'
     : 'Виконай у цій сесії /reload-plugins'
+  const sessionModel = modelLabel(session.model) ?? 'Модель'
+  const sessionEffort = session.effort ?? 'Effort'
 
   const choose = (nextModel: string | null, nextEffort: string | null) => {
     void chooseModel(session.id, nextModel, nextEffort)
@@ -24,36 +27,26 @@ export function ModelControls({ session }: { session: SessionView }) {
 
   return (
     <>
-      <select
-        className={`picker ${model === null ? '' : 'changed'}`}
-        aria-label="Модель сесії"
+      <Dropdown
+        label={MODELS.find(item => item.value === model)?.label ?? sessionModel}
+        ariaLabel="Модель сесії"
         title={title}
-        disabled={!isAvailable}
-        value={model ?? ''}
-        onChange={event => choose(event.target.value === '' ? null : event.target.value, effort)}
-      >
-        <option value="">{model === null ? (modelLabel(session.model) ?? 'Модель') : 'Як у сесії'}</option>
-        {MODELS.map(item => (
-          <option key={item.value} value={item.value}>
-            {item.label}
-          </option>
-        ))}
-      </select>
-      <select
-        className={`picker ${effort === null ? '' : 'changed'}`}
-        aria-label="Effort сесії"
+        options={[{ value: null, label: `Як у сесії · ${sessionModel}` }, ...MODELS]}
+        value={model}
+        isChanged={model !== null}
+        isDisabled={!isAvailable}
+        onChange={value => choose(value, effort)}
+      />
+      <Dropdown
+        label={effort ?? sessionEffort}
+        ariaLabel="Effort сесії"
         title={title}
-        disabled={!isAvailable}
-        value={effort ?? ''}
-        onChange={event => choose(model, event.target.value === '' ? null : event.target.value)}
-      >
-        <option value="">{effort === null ? (session.effort ?? 'Effort') : 'Як у сесії'}</option>
-        {EFFORTS.map(item => (
-          <option key={item} value={item}>
-            {item}
-          </option>
-        ))}
-      </select>
+        options={[{ value: null, label: `Як у сесії · ${sessionEffort}` }, ...EFFORTS.map(item => ({ value: item, label: item }))]}
+        value={effort}
+        isChanged={effort !== null}
+        isDisabled={!isAvailable}
+        onChange={value => choose(model, value)}
+      />
     </>
   )
 }

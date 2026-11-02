@@ -13,12 +13,33 @@ function title(run: TestRun): string {
   return run.failed === false ? 'Тести пройшли' : 'Тести завершено'
 }
 
+export function RunBar({ run, clock }: { run: TestRun; clock: number }) {
+  const progress = run.progress
+  const hasTotal = progress !== null && progress.total > 0
+  const passedShare = hasTotal ? ((progress.done - progress.failed) / progress.total) * 100 : 0
+  const failedShare = hasTotal ? (progress.failed / progress.total) * 100 : 0
+  const expected = hasTotal ? null : expectedShare(run, clock)
+
+  return (
+    <div className={`bar ${!hasTotal && expected === null && run.endedAt === null ? 'indeterminate' : ''}`}>
+      {hasTotal && (
+        <>
+          <div className="bar-pass" style={{ width: `${passedShare}%` }} />
+          <div className="bar-fail" style={{ width: `${failedShare}%`, minWidth: progress.failed > 0 ? 4 : 0 }} />
+        </>
+      )}
+      {expected !== null && <div className="bar-pass" style={{ width: `${expected}%` }} />}
+      {!hasTotal && run.endedAt !== null && (
+        <div className={run.failed === true ? 'bar-fail' : 'bar-pass'} style={{ width: '100%' }} />
+      )}
+    </div>
+  )
+}
+
 export function TestsBar({ run, clock, isCompact = false }: { run: TestRun; clock: number; isCompact?: boolean }) {
   const progress = run.progress
   const elapsed = (run.endedAt ?? clock) - run.startedAt
   const hasTotal = progress !== null && progress.total > 0
-  const passedShare = hasTotal ? ((progress.done - progress.failed) / progress.total) * 100 : 0
-  const failedShare = hasTotal ? (progress.failed / progress.total) * 100 : 0
   const eta = testEta(run, clock)
   const expected = hasTotal ? null : expectedShare(run, clock)
   const unit = progress?.unit === 'files' ? 'файлів' : 'тестів'
@@ -49,18 +70,7 @@ export function TestsBar({ run, clock, isCompact = false }: { run: TestRun; cloc
           </div>
         </div>
       </div>
-      <div className={`bar ${!hasTotal && expected === null && run.endedAt === null ? 'indeterminate' : ''}`}>
-        {hasTotal && (
-          <>
-            <div className="bar-pass" style={{ width: `${passedShare}%` }} />
-            <div className="bar-fail" style={{ width: `${failedShare}%`, minWidth: progress.failed > 0 ? 4 : 0 }} />
-          </>
-        )}
-        {expected !== null && <div className="bar-pass" style={{ width: `${expected}%` }} />}
-        {!hasTotal && run.endedAt !== null && (
-          <div className={run.failed === true ? 'bar-fail' : 'bar-pass'} style={{ width: '100%' }} />
-        )}
-      </div>
+      <RunBar run={run} clock={clock} />
       {!isCompact && progress !== null && progress.suites.length > 0 && (
         <div className="suites">
           {progress.suites.map(suite => {

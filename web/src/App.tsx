@@ -9,6 +9,7 @@ import { NewSessionDialog } from './NewSessionDialog.tsx'
 import { Overview } from './Overview.tsx'
 import { nextSelection } from './selection.ts'
 import { SessionScreen } from './SessionScreen.tsx'
+import { latestOf } from './succession.ts'
 import { Sidebar } from './Sidebar.tsx'
 import { browserStore } from './storage.ts'
 import { TelegramDialog } from './TelegramDialog.tsx'
@@ -162,6 +163,14 @@ export function App() {
     location.hash = id ?? ''
   }, [])
 
+  useEffect(() => {
+    const latest = snapshot === null ? selected : latestOf(snapshot.sessions, selected)
+
+    if (latest !== selected && latest !== null) {
+      location.hash = latest
+    }
+  }, [snapshot, selected])
+
   const session = useMemo(
     () => snapshot?.sessions.find(candidate => candidate.id === selected) ?? null,
     [snapshot, selected],
@@ -186,6 +195,7 @@ export function App() {
         onTelegram={() => setIsTelegramOpen(true)}
         isSessionsOpen={isSessionsOpen}
         onSessions={() => setIsSessionsOpen(value => !value)}
+        clock={clock}
       />
       <div className="columns">
         <Sidebar

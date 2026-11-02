@@ -1,9 +1,40 @@
 import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { matchesAnyCommand, splitCommand } from './status.ts'
 
 const READ_LIMIT = 8 * 1024 * 1024
 const CLOCK_SKEW_MS = 2000
+
+const REDIRECT = /(?:^|\s)(?:[12]?>>?|&>>?)\s*("[^"]+"|'[^']+'|[^\s"'&|;<>]+)/g
+const TEE = /^tee(?:\s+-a)?\s+("[^"]+"|'[^']+'|\S+)/
+
+function unquote(value: string): string {
+  return value.replace(/^(["'])(.*)\1$/, '$2')
+}
+
+export function outputTarget(command: string, cwd: string, patterns: readonly string[]): string | null {
+  const parts = splitCommand(command)
+  const index = parts.findIndex(part => matchesAnyCommand(part, patterns))
+
+  if (index === -1) {
+    return null
+  }
+
+  const redirect = [...(parts[index] as string).matchAll(REDIRECT)]
+    .map(found => found[1] as string)
+    .find(target => !target.startsWith('&'))
+  const tee = TEE.exec(parts[index + 1] ?? '')?.[1]
+  const target = redirect ?? tee
+
+  if (target === undefined) {
+    return null
+  }
+
+  const path = unquote(target)
+
+  return path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(cwd, path)
+}
 
 function claudeRoots(): string[] {
   const uid = process.getuid?.() ?? 0

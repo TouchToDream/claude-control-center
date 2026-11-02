@@ -1,4 +1,4 @@
-import type { MacAlertsView, MacEvent, OutboxItem, UploadView, Row, SessionCommand, Snapshot, TelegramView, TimelineEntry } from './model.ts'
+import type { MacAlertsView, MacEvent, OutboxItem, QuickButton, UploadView, Row, SessionCommand, Snapshot, TelegramView, TimelineEntry } from './model.ts'
 
 export type ServerMessage =
   | { type: 'state'; state: Snapshot }
@@ -106,6 +106,19 @@ export async function resumeSession(
   const response = await post(`/api/panel/sessions/${sessionId}/resume`, {})
 
   return response.json()
+}
+
+const SEND_ERRORS: Record<string, string> = {
+  mod_outdated: 'У цій сесії старий мод: виконай у ній /reload-plugins, тоді команди з ! запрацюють',
+  empty_command: 'Після ! потрібна команда',
+}
+
+export function sendErrorText(code: string): string {
+  return SEND_ERRORS[code] ?? 'Сервіс не прийняв повідомлення'
+}
+
+export async function saveButtons(buttons: readonly QuickButton[]): Promise<QuickButton[]> {
+  return ((await (await post('/api/panel/buttons', { buttons })).json()) as { buttons: QuickButton[] }).buttons
 }
 
 export async function uploadFile(sessionId: string, file: File): Promise<UploadView> {

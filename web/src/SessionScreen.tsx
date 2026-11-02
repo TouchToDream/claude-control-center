@@ -1,7 +1,19 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { abortTurn, cancelOutbox, dismissOutbox, forceOutbox, loadCommands, loadOlderRows, sendMessage, uploadFile } from './api.ts'
+import {
+  abortTurn,
+  cancelOutbox,
+  dismissOutbox,
+  forceOutbox,
+  loadCommands,
+  loadOlderRows,
+  sendErrorText,
+  sendMessage,
+  uploadFile,
+} from './api.ts'
+import { ButtonsDialog } from './ButtonsDialog.tsx'
+import { QuickButtons } from './QuickButtons.tsx'
 import { composeMessage, previewUrl, restoreAttachments, shortLabel, splitAttachments } from './attachments.ts'
 import { AskCard } from './AskCard.tsx'
 import { DiffDialog } from './DiffDialog.tsx'
@@ -14,7 +26,7 @@ import { CloseDialog, RenameForm, ResumeDialog } from './SessionActions.tsx'
 import { Progress } from './Progress.tsx'
 import { shellCommand } from './shell.ts'
 import { browserStore } from './storage.ts'
-import { TestsBar } from './TestsBar.tsx'
+import { ChecksPanel } from './ChecksPanel.tsx'
 
 const HISTORY_PAGE = 400
 const MARKDOWN_PLUGINS = [remarkGfm]
@@ -190,11 +202,6 @@ function isSuperseded(item: OutboxItem, outbox: readonly OutboxItem[]): boolean 
 
 function typedText(item: OutboxItem): string {
   return item.kind === 'bash' ? `!${item.text}` : item.text
-}
-
-const SEND_ERRORS: Record<string, string> = {
-  mod_outdated: 'У цій сесії старий мод: виконай у ній /reload-plugins, тоді команди з ! запрацюють',
-  empty_command: 'Після ! потрібна команда',
 }
 
 function QueuedNote({
@@ -449,7 +456,7 @@ function Composer({ session, draft, onDraft, attachments, onAttachments }: Compo
         onAttachments(() => ready)
       }
 
-      setError(SEND_ERRORS[failure.message] ?? 'Сервіс не прийняв повідомлення')
+      setError(sendErrorText(failure.message))
     })
   }
 
@@ -593,17 +600,21 @@ function Composer({ session, draft, onDraft, attachments, onAttachments }: Compo
 
 function SidePanel({
   session,
+  snapshot,
   clock,
   onFile,
   onClose,
 }: {
   session: SessionView
+  snapshot: Snapshot
   clock: number
   onFile: (path: string) => void
   onClose: () => void
 }) {
   const agents = session.agents.filter(agent => ['pending', 'running', 'waiting'].includes(agent.status))
   const context = session.contextPercent
+  const [isClearing, setIsClearing] = useState(false)
+  const isLive = session.status !== 'offline'
 
   return (
     <aside className="side">
@@ -619,6 +630,46 @@ function SidePanel({
       <div className="track context">
         <div className="fill violet" style={{ width: `${context ?? 0}%` }} />
       </div>
+      {isLive && !isClearing && (
+        <div className="context-actions">
+          <button
+            type="button"
+            className="action context-button"
+            title="Стиснути розмову в коротке зведення (/compact)"
+            onClick={() => void sendMessage(session.id, '/compact')}
+          >
+            Compact
+          </button>
+          <button
+            type="button"
+            className="action context-button"
+            title="Почати розмову з чистого контексту (/clear)"
+            onClick={() => setIsClearing(true)}
+          >
+            Clear
+          </button>
+        </div>
+      )}
+      {isLive && isClearing && (
+        <div className="context-confirm small">
+          <span>Очистити контекст? Сесія забуде розмову, файли й гілка лишаться.</span>
+          <span className="context-actions">
+            <button
+              type="button"
+              className="action context-button danger"
+              onClick={() => {
+                setIsClearing(false)
+                void sendMessage(session.id, '/clear')
+              }}
+            >
+              Clear
+            </button>
+            <button type="button" className="action context-button" onClick={() => setIsClearing(false)}>
+              Скасувати
+            </button>
+          </span>
+        </div>
+      )}
 
       <div className="side-label small muted">Агенти: {agents.length + 1}</div>
       <div className="agents">
@@ -658,6 +709,7 @@ function SidePanel({
       </div>
       {session.model !== null && <div className="small muted mono">{session.model}</div>}
 
+      <ChecksPanel checks={snapshot.checks} repoRoot={session.repoRoot} clock={clock} />
     </aside>
   )
 }
@@ -679,12 +731,11 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
   const [attachments, setAttachments] = useState<Attachment[]>(() => loadAttachments(browserStore(), session.id))
   const [diffPath, setDiffPath] = useState<string | null>(null)
   const [isSideOpen, setIsSideOpen] = useState(false)
+  const [isEditingButtons, setIsEditingButtons] = useState(false)
   const asks = snapshot.asks.filter(ask => ask.sessionId === session.id)
 
   useEffect(() => saveDraft(browserStore(), session.id, draft), [session.id, draft])
   useEffect(() => saveAttachments(browserStore(), session.id, attachments), [session.id, attachments])
-  const run = session.tests
-  const showTests = run !== null && (run.endedAt === null || run.failed === true)
   const isOffline = session.status === 'offline'
   const canResume = session.endedAt !== null
 
@@ -692,23 +743,23 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
     <div className={`session ${isSideOpen ? 'side-open' : ''}`}>
       <div className="session-main">
         <div className="session-head">
-          <div className="session-title">
-            <div className="session-meta">
-              <span className="mono small muted ellipsis">
-                {session.repoName} · {session.branch ?? 'без гілки'}
-              </span>
-              {!isOffline && <ModelControls session={session} />}
-            </div>
-            <div className="session-name">
-              <h1 className="ellipsis" title={session.name}>
-                {session.name}
-              </h1>
-              <span className={`pill pill-${session.status}`}>
-                <span className={`dot status-${session.status} ${isRunning(session) ? 'pulse' : ''}`} />
-                {session.endedAt === null ? STATUS_LABEL[session.status] : 'закрита'}
-              </span>
-            </div>
+          <div className="session-name">
+            <h1 className="ellipsis" title={session.name}>
+              {session.name}
+            </h1>
+            <span className={`pill pill-${session.status}`}>
+              <span className={`dot status-${session.status} ${isRunning(session) ? 'pulse' : ''}`} />
+              {session.endedAt === null ? STATUS_LABEL[session.status] : 'закрита'}
+            </span>
           </div>
+          <div className="session-meta mono small muted ellipsis" title={`${session.repoName} · ${session.branch ?? 'без гілки'}`}>
+            {session.repoName} · {session.branch ?? 'без гілки'}
+          </div>
+          {!isOffline && (
+            <div className="session-controls">
+              <ModelControls session={session} />
+            </div>
+          )}
           <div className="session-actions">
             <button
               type="button"
@@ -745,11 +796,6 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
           </div>
           {isRenaming && !isOffline && <RenameForm session={session} onDone={() => setIsRenaming(false)} />}
         </div>
-        {showTests && (
-          <div className="session-tests">
-            <TestsBar run={run} clock={clock} isCompact />
-          </div>
-        )}
         <Conversation session={session} rows={rows} onRows={onRows} />
         <div className="session-bottom">
           {asks.map(ask => (
@@ -765,6 +811,9 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
               setAttachments(restoreAttachments(paths))
             }}
           />
+          {!isOffline && (
+            <QuickButtons session={session} buttons={snapshot.buttons ?? []} onEdit={() => setIsEditingButtons(true)} />
+          )}
           {isOffline ? (
             <ClosedNote session={session} clock={clock} />
           ) : (
@@ -778,10 +827,17 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
           )}
         </div>
       </div>
-      <SidePanel session={session} clock={clock} onFile={setDiffPath} onClose={() => setIsSideOpen(false)} />
+      <SidePanel
+        session={session}
+        snapshot={snapshot}
+        clock={clock}
+        onFile={setDiffPath}
+        onClose={() => setIsSideOpen(false)}
+      />
       {diffPath !== null && (
         <DiffDialog session={session} path={diffPath} onPath={setDiffPath} onClose={() => setDiffPath(null)} />
       )}
+      {isEditingButtons && <ButtonsDialog buttons={snapshot.buttons ?? []} onClose={() => setIsEditingButtons(false)} />}
       {isClosing && <CloseDialog session={session} onClose={() => setIsClosing(false)} />}
       {isResuming && <ResumeDialog session={session} onClose={() => setIsResuming(false)} />}
     </div>

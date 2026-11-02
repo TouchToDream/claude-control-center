@@ -2,9 +2,12 @@ import { basename } from 'node:path'
 import { clip, redact } from '../mod/hooks/redact.ts'
 import { parseTestOutput } from './progress.ts'
 import type { ParsedProgress } from './progress.ts'
-import { isTestCommand } from './status.ts'
+import { describeCheck, summarizeCheck } from './checks.ts'
 import type { Store } from './store.ts'
 import type {
+  CheckKind,
+  TestProgress,
+  TestRun,
   AgentSnapshot,
   Ask,
   ChangedFile,
@@ -18,6 +21,8 @@ import type {
 } from './types.ts'
 
 const NAME_LIMIT = 48
+const TAIL_LINES = 40
+const TAIL_CHARS = 4000
 const WORK_WINDOW = 5
 const PATHS_LIMIT = 500
 const PULL_REQUESTS_LIMIT = 10
@@ -75,6 +80,8 @@ export function blankSession(id: string, now: number): SessionState {
     runningTool: null,
     activity: 'Щойно запустилася',
     tests: null,
+    check: null,
+    continuedFrom: null,
     turnError: false,
     recentWork: [],
     turnHadWork: false,
@@ -451,21 +458,33 @@ function applyToolStart(store: Store, session: SessionState, settings: Settings,
   if (tool === 'Bash') {
     session.turnHadWork = true
 
-    if (event.background !== true && isTestCommand(summary, settings.testCommands)) {
-      session.tests = {
-        id: String(event.id),
-        sessionId: session.id,
-        repoRoot: session.repoRoot,
-        command: summary,
-        expectedMs: expectedDuration(store, session, summary),
-        startedAt: event.at,
-        endedAt: null,
-        failed: null,
-        progress: null,
-      }
+    const described = describeCheck(summary, settings)
+    const kind = described?.kind ?? null
+    const run = described === null ? null : {
+      id: String(event.id),
+      sessionId: session.id,
+      repoRoot: session.repoRoot,
+      command: summary,
+      expectedMs: expectedDuration(store, session, described, summary),
+      isBackground: event.background === true,
+      startedAt: event.at,
+      endedAt: null,
+      failed: null,
+      progress: null,
+      kind: described.kind,
+      tool: described.tool,
+      summary: null,
+      tail: null,
+    }
+
+    if (run !== null && kind === 'tests') {
+      session.tests = run
       store.saveTestRun(session.tests)
       work.testRuns += 1
       cycle.last = 'test'
+    } else if (run !== null) {
+      session.check = run
+      store.saveTestRun(session.check)
     }
   }
 
@@ -480,7 +499,9 @@ function applyToolEnd(store: Store, session: SessionState, event: ModEvent): voi
   const failed = event.isError === true
   const summary = String(event.summary ?? '')
 
-  if (session.tests !== null && session.tests.endedAt === null && session.tests.id === String(event.id)) {
+  const keepsRunning = (run: TestRun | null) => run?.isBackground === true && event.denied !== true
+
+  if (session.tests !== null && session.tests.endedAt === null && session.tests.id === String(event.id) && !keepsRunning(session.tests)) {
     const parsed = typeof event.tail === 'string' ? parseTestOutput(event.tail) : null
     const hasResult = parsed?.isFinal === true
     const counters = hasResult ? { progress: { ...withoutFinal(parsed), updatedAt: event.at } } : {}
@@ -490,8 +511,22 @@ function applyToolEnd(store: Store, session: SessionState, event: ModEvent): voi
       ...counters,
       endedAt: event.at,
       failed: runFailed(event.denied === true, failed, hasResult ? parsed : null),
+      tail: typeof event.tail === 'string' ? lastLines(event.tail) : null,
     }
     store.saveTestRun(session.tests)
+  }
+
+  if (session.check !== null && session.check.endedAt === null && session.check.id === String(event.id) && !keepsRunning(session.check)) {
+    const tail = typeof event.tail === 'string' ? event.tail : null
+
+    session.check = {
+      ...session.check,
+      endedAt: event.at,
+      failed: event.denied === true ? null : failed,
+      summary: tail === null ? null : summarizeCheck(session.check.tool ?? '', tail),
+      tail: tail === null ? null : lastLines(tail),
+    }
+    store.saveTestRun(session.check)
   }
 
   const wasTestRun = session.tests?.id === String(event.id)
@@ -573,6 +608,20 @@ function runFailed(isDenied: boolean, hasCommandFailed: boolean, parsed: ParsedP
   return parsed === null ? hasCommandFailed : parsed.failed > 0 || hasCommandFailed
 }
 
+function lastLines(text: string): string {
+  return text.replace(/\r/g, '\n').split('\n').filter(line => line.trim() !== '').slice(-TAIL_LINES).join('\n').slice(-TAIL_CHARS)
+}
+
+export function applyCheckProgress(store: Store, session: SessionState, progress: Omit<TestProgress, 'updatedAt'>, now: number): void {
+  if (session.check === null) {
+    return
+  }
+
+  session.check = { ...session.check, progress: { ...progress, updatedAt: now } }
+  store.saveTestRun(session.check)
+  store.touch(session)
+}
+
 export function applyTestProgress(store: Store, session: SessionState, parsed: ParsedProgress, now: number): void {
   if (session.tests === null) {
     return
@@ -583,12 +632,33 @@ export function applyTestProgress(store: Store, session: SessionState, parsed: P
   store.touch(session)
 }
 
-function expectedDuration(store: Store, session: SessionState, command: string): number | null {
+function expectedDuration(store: Store, session: SessionState, check: { kind: CheckKind; tool: string }, command: string): number | null {
+  const isSameCheck = (run: TestRun) => (run.kind ?? 'tests') === check.kind && run.tool === check.tool
   const previous = store
     .testRuns(200)
-    .find(run => run.repoRoot === session.repoRoot && run.command === command && run.endedAt !== null)
+    .find(run => run.repoRoot === session.repoRoot && run.endedAt !== null && run.failed !== null && (isSameCheck(run) || run.command === command))
 
   return previous === undefined ? null : (previous.endedAt as number) - previous.startedAt
+}
+
+export function finishRun(store: Store, session: SessionState, slot: 'tests' | 'check', patch: Partial<TestRun>, at: number): void {
+  const run = session[slot]
+
+  if (run === null || run.endedAt !== null) {
+    return
+  }
+
+  const ended: TestRun = { ...run, ...patch, endedAt: at }
+
+  session[slot] = ended
+  store.saveTestRun(ended)
+
+  if (slot === 'tests' && ended.failed !== null) {
+    session.work.testFailures += ended.failed ? 1 : 0
+    session.cycle.tests = ended.failed ? 'failed' : 'passed'
+  }
+
+  store.touch(session)
 }
 
 function describeTool(tool: string, summary: string): string {

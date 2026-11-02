@@ -20,11 +20,39 @@ const DEFAULTS: Omit<Settings, 'key'> = {
     'jest',
     'pytest',
     'phpunit',
+    'paratest',
+    'pest',
     'php artisan test',
+    'composer test',
     'go test',
     'cargo test',
   ],
+  lintCommands: [
+    'pint',
+    'php-cs-fixer',
+    'eslint',
+    'expo lint',
+    'npm run lint',
+    'pnpm lint',
+    'yarn lint',
+    'prettier --check',
+    'biome check',
+    'biome lint',
+  ],
+  analysisCommands: [
+    'phpstan',
+    'composer analyse',
+    'composer analyze',
+    'psalm',
+    'tsc',
+    'vue-tsc',
+    'npm run typecheck',
+    'pnpm typecheck',
+    'yarn typecheck',
+  ],
 }
+
+const COMMAND_LISTS = ['testCommands', 'lintCommands', 'analysisCommands'] as const
 
 export function homeDirectory(): string {
   return process.env.CCC_HOME ?? join(homedir(), '.claude-control-center')
@@ -39,9 +67,13 @@ export function loadSettings(home: string): Settings {
     ? (JSON.parse(readFileSync(path, 'utf8')) as Partial<Settings>)
     : {}
   const known = Object.entries(stored).filter(([name]) => name in DEFAULTS)
+  const merged = Object.fromEntries(
+    COMMAND_LISTS.map(name => [name, [...new Set([...(stored[name] ?? []), ...DEFAULTS[name]])]]),
+  )
   const settings: Settings = {
     ...DEFAULTS,
     ...Object.fromEntries(known),
+    ...merged,
     key: stored.key ?? randomBytes(32).toString('hex'),
   }
 

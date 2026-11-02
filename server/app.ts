@@ -8,8 +8,11 @@ import { resumeBackgroundSession, startBackgroundSession, stopBackgroundSession 
 import type { BackgroundResult } from './background.ts'
 import { MAC_EVENTS, MacAlerts } from './alerts.ts'
 import type { Alert, MacEvent, Viewing } from './alerts.ts'
+import { parseButtons } from './buttons.ts'
+import type { QuickButton } from './buttons.ts'
 import { absolutePath, isSafePath, openInIde, readDiff } from './changes.ts'
-import { applyEvents, applyTestProgress } from './ingest.ts'
+import { checkVerdict, commandPatterns, describeCheck, parseCheckProgress, toolName } from './checks.ts'
+import { applyCheckProgress, applyEvents, applyTestProgress, finishRun } from './ingest.ts'
 import { Notifier, NOTIFY_EVENTS } from './notifier.ts'
 import type { NotifyEvent } from './notifier.ts'
 import { parseTestOutput } from './progress.ts'
@@ -22,7 +25,7 @@ import { computeStage, computeStatus } from './status.ts'
 import type { Store } from './store.ts'
 import { createTelegramApi, TelegramError } from './telegram.ts'
 import type { TelegramApi } from './telegram.ts'
-import { findOutputFile, readOutput } from './testWatch.ts'
+import { findOutputFile, outputTarget, readOutput } from './testWatch.ts'
 import { mediaType, pruneUploads, saveUpload, UPLOAD_LIMIT, uploadPath } from './uploads.ts'
 import type {
   Ask,
@@ -32,12 +35,16 @@ import type {
   Row,
   SessionState,
   Settings,
+  TestRun,
 } from './types.ts'
 
 const COOKIE = 'ccc_key'
 const MOD_BODY_LIMIT = 8 * 1024 * 1024
 const PANEL_BODY_LIMIT = 256 * 1024
 const RETENTION_MS = 14 * 24 * 60 * 60 * 1000
+const CLEAR_FOLLOW_MS = 2 * 60 * 1000
+const BACKGROUND_LIMIT_MS = 2 * 60 * 60 * 1000
+const TAIL_LINES = 40
 const LONG_POLL_LIMIT_MS = 28_000
 const NAME_LIMIT = 80
 const EXIT_COMMAND = '/exit'
@@ -143,6 +150,8 @@ export function createApp(options: AppOptions): App {
       unbridged,
       testRuns: store.testRuns(20),
       telegram: notifier.view(),
+      checks: store.latestChecks().map(run => checkView(run, settings)),
+      buttons: JSON.parse(store.meta('buttons') ?? '[]') as QuickButton[],
       alerts: macAlerts.unread().map(alertView),
       macAlerts: macAlertsView(),
     }
@@ -185,6 +194,31 @@ export function createApp(options: AppOptions): App {
     waiters.delete(ask.id)
   }
 
+  const continueClearedSession = (session: SessionState) => {
+    const at = now()
+    const cleared = [...store.sessions.values()].find(
+      other =>
+        other.id !== session.id &&
+        other.pid === session.pid &&
+        other.endReason === 'clear' &&
+        other.endedAt !== null &&
+        at - other.endedAt < CLEAR_FOLLOW_MS,
+    )
+
+    if (cleared === undefined || session.continuedFrom !== null) {
+      return
+    }
+
+    session.continuedFrom = cleared.id
+
+    if (cleared.nameSource === 'panel' && session.nameSource !== 'registry') {
+      session.name = cleared.name
+      session.nameSource = 'panel'
+    }
+
+    scheduleBroadcast()
+  }
+
   const syncRegistry = () => {
     const entries = registry()
     const known = new Set<string>()
@@ -201,6 +235,7 @@ export function createApp(options: AppOptions): App {
       if (session.pid !== entry.pid || session.isBackground !== (entry.kind === 'bg')) {
         session.pid = entry.pid
         session.isBackground = entry.kind === 'bg'
+        continueClearedSession(session)
         store.touch(session)
       }
 
@@ -235,6 +270,19 @@ export function createApp(options: AppOptions): App {
     }
   }
 
+  const outputOf = (session: SessionState, run: TestRun): string | null => {
+    const patterns = commandPatterns(run.kind ?? 'tests', settings)
+    const path = outputTarget(run.command, session.cwd, patterns) ?? findOutputFile(session.id, run.startedAt)
+
+    return path === null ? null : readOutput(path)
+  }
+
+  const isAbandoned = (session: SessionState, run: TestRun, at: number) =>
+    run.isBackground === true && (session.endedAt !== null || at - run.startedAt > BACKGROUND_LIMIT_MS)
+
+  const lastLines = (output: string) =>
+    output.replace(/\r/g, '\n').split('\n').filter(line => line.trim() !== '').slice(-TAIL_LINES).join('\n')
+
   const watchTests = (at: number): boolean => {
     let hasChanged = false
 
@@ -245,12 +293,50 @@ export function createApp(options: AppOptions): App {
         continue
       }
 
-      const path = findOutputFile(session.id, run.startedAt)
-      const output = path === null ? null : readOutput(path)
+      if (isAbandoned(session, run, at)) {
+        finishRun(store, session, 'tests', { failed: null }, at)
+        hasChanged = true
+
+        continue
+      }
+
+      const output = outputOf(session, run)
       const parsed = output === null ? null : parseTestOutput(output)
 
-      if (parsed !== null) {
+      if (parsed !== null && run.isBackground === true && parsed.isFinal) {
+        const { isFinal: _isFinal, ...counters } = parsed
+
+        finishRun(store, session, 'tests', { failed: parsed.failed > 0, progress: { ...counters, updatedAt: at }, tail: lastLines(output as string) }, at)
+        hasChanged = true
+      } else if (parsed !== null) {
         applyTestProgress(store, session, parsed, at)
+        hasChanged = true
+      }
+    }
+
+    for (const session of store.sessions.values()) {
+      const run = session.check
+
+      if (run === null || run.endedAt !== null) {
+        continue
+      }
+
+      if (isAbandoned(session, run, at)) {
+        finishRun(store, session, 'check', { failed: null }, at)
+        hasChanged = true
+
+        continue
+      }
+
+      const output = outputOf(session, run)
+      const verdict = output === null || run.isBackground !== true ? null : checkVerdict(run.tool ?? '', output)
+      const progress = output === null ? null : parseCheckProgress(run.tool ?? '', output)
+
+      if (verdict !== null) {
+        finishRun(store, session, 'check', { ...verdict, tail: lastLines(output as string) }, at)
+        hasChanged = true
+      } else if (progress !== null) {
+        applyCheckProgress(store, session, progress, at)
         hasChanged = true
       }
     }
@@ -599,6 +685,20 @@ export function createApp(options: AppOptions): App {
 
     if (url.pathname === '/api/panel/mac-alerts') {
       return handleMacAlerts(request, response)
+    }
+
+    if (url.pathname === '/api/panel/buttons' && request.method === 'POST') {
+      const body = (await readJson(request, PANEL_BODY_LIMIT)) as { buttons?: unknown }
+      const buttons = parseButtons(body.buttons)
+
+      if (buttons === null) {
+        return json(response, 422, { error: 'invalid_buttons' })
+      }
+
+      store.setMeta('buttons', JSON.stringify(buttons))
+      scheduleBroadcast()
+
+      return json(response, 200, { buttons })
     }
 
     if (parts[2] === 'uploads' && parts.length === 5 && request.method === 'GET') {
@@ -982,6 +1082,16 @@ type ClientInfo = {
   isApp: boolean
   sessionId: string | null
   isVisible: boolean
+}
+
+function checkView(run: TestRun, settings: Settings) {
+  return {
+    ...run,
+    kind: run.kind ?? 'tests',
+    tool: run.tool ?? describeCheck(run.command, settings)?.tool ?? toolName(run.command),
+    summary: run.summary ?? null,
+    tail: run.tail ?? null,
+  }
 }
 
 function alertView(alert: Alert) {

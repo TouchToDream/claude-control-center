@@ -145,7 +145,7 @@ function Timeline({
 }
 
 function History({ snapshot, clock, onOpen }: { snapshot: Snapshot; clock: number; onOpen: (id: string) => void }) {
-  const finished = snapshot.testRuns.filter(run => run.endedAt !== null).slice(0, 6)
+  const finished = snapshot.testRuns.filter(run => (run.kind ?? 'tests') === 'tests' && run.endedAt !== null).slice(0, 6)
 
   if (finished.length === 0) {
     return null

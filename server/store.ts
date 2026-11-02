@@ -161,6 +161,7 @@ export class Store {
   private readonly dirty = new Set<string>()
   private readonly lastStatus = new Map<string, Status>()
   private readonly statements = new Map<string, StatementSync>()
+  private latestChecksCache: TestRun[] | null = null
 
   constructor(path: string) {
     this.db = new DatabaseSync(path)
@@ -402,6 +403,25 @@ export class Store {
       run.startedAt,
       JSON.stringify(run),
     )
+    this.latestChecksCache = null
+  }
+
+  latestChecks(): TestRun[] {
+    if (this.latestChecksCache === null) {
+      const latest = new Map<string, TestRun>()
+
+      for (const run of this.testRuns(500)) {
+        const key = `${run.repoRoot}\u0000${run.kind ?? 'tests'}`
+
+        if (!latest.has(key)) {
+          latest.set(key, run)
+        }
+      }
+
+      this.latestChecksCache = [...latest.values()]
+    }
+
+    return this.latestChecksCache
   }
 
   testRuns(limit: number): TestRun[] {

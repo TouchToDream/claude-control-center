@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, test } from 'node:test'
@@ -13,7 +13,16 @@ import { TelegramError } from './telegram.ts'
 import type { Settings } from './types.ts'
 
 const KEY = 'a'.repeat(64)
-const settings: Settings = { port: 0, key: KEY, idleMinutes: 10, offlineSeconds: 20, modDir: null, testCommands: ['npm test'] }
+const settings: Settings = {
+  port: 0,
+  key: KEY,
+  idleMinutes: 10,
+  offlineSeconds: 20,
+  modDir: null,
+  testCommands: ['npm test'],
+  lintCommands: ['pint', 'eslint'],
+  analysisCommands: ['phpstan', 'composer analyse', 'tsc'],
+}
 
 let app: App
 let store: Store
@@ -990,4 +999,115 @@ test('a shell command to an older mod or without a command is refused', async ()
   assert.deepEqual(await old.json(), { error: 'mod_outdated' })
   assert.equal(empty.status, 422)
   assert.deepEqual(await empty.json(), { error: 'empty_command' })
+})
+
+type CheckView = { id: string; repoRoot: string; kind: string; tool: string; endedAt: number | null; failed: boolean | null; summary: string | null; tail: string | null }
+
+const checksOf = async (repoRoot: string) =>
+  ((await (await panel('/api/panel/state')).json()) as { checks: CheckView[] }).checks.filter(check => check.repoRoot === repoRoot)
+
+test('lint and code analysis runs are tracked for the project and are not tests', async () => {
+  const at = Date.now()
+
+  await events('lint', [{ t: 'hello', at, cwd: '/work/lint', repoRoot: '/work/lint', model: 'm', surfaces: ['terminal'] }])
+  await events('lint', [{ t: 'tool_start', at, id: 'a1', tool: 'Bash', summary: 'composer analyse' }])
+
+  const running = (await checksOf('/work/lint')).find(check => check.id === 'a1')
+
+  assert.deepEqual([running?.kind, running?.tool, running?.endedAt], ['analysis', 'PHPStan', null])
+  assert.equal(store.sessions.get('lint')?.tests, null)
+
+  await events('lint', [
+    { t: 'tool_end', at: at + 5, id: 'a1', tool: 'Bash', summary: 'composer analyse', isError: true, denied: false, tail: ' [ERROR] Found 3 errors\n' },
+  ])
+
+  const ended = (await checksOf('/work/lint')).find(check => check.id === 'a1')
+
+  assert.deepEqual([ended?.failed, ended?.summary], [true, 'помилок: 3'])
+  assert.match(ended?.tail ?? '', /Found 3 errors/)
+  assert.equal(store.sessions.get('lint')?.work.testRuns, 0)
+})
+
+test('only the latest run of each check is kept per project', async () => {
+  const at = Date.now()
+
+  await events('lint2', [{ t: 'hello', at, cwd: '/work/lint', repoRoot: '/work/lint', model: 'm', surfaces: ['terminal'] }])
+  await events('lint2', [{ t: 'tool_start', at: at + 10, id: 'p1', tool: 'Bash', summary: 'vendor/bin/pint --test' }])
+  await events('lint2', [{ t: 'tool_end', at: at + 20, id: 'p1', tool: 'Bash', summary: 'vendor/bin/pint --test', isError: false, denied: false }])
+  await events('lint2', [{ t: 'tool_start', at: at + 30, id: 'p2', tool: 'Bash', summary: 'vendor/bin/pint --test' }])
+
+  const lint = (await checksOf('/work/lint')).filter(check => check.kind === 'lint')
+
+  assert.deepEqual(lint.map(check => [check.id, check.endedAt]), [['p2', null]])
+})
+
+test('a session cleared with /clear goes on as the new one and keeps its panel name', async () => {
+  const at = Date.now()
+  const entry = (sessionId: string) => ({ pid: process.pid, sessionId, cwd: '/work/repo', name: null, nameSource: null, kind: 'interactive', entrypoint: 'cli', status: 'idle', startedAt: at, isAlive: true })
+
+  registryEntries = [entry('before-clear')]
+  await hello('before-clear')
+  await panel('/api/panel/sessions/before-clear/rename', { method: 'POST', body: JSON.stringify({ name: 'Литовська реєстрація' }) })
+  await new Promise(done => setTimeout(done, 3200))
+
+  await events('before-clear', [{ t: 'session_end', at: Date.now(), reason: 'clear' }])
+  registryEntries = [entry('after-clear')]
+  await hello('after-clear')
+
+  const after = await waitFor(
+    async () => ((await (await panel('/api/panel/state')).json()) as { sessions: { id: string; name: string; continuedFrom: string | null }[] }).sessions.find(session => session.id === 'after-clear'),
+    session => session?.continuedFrom === 'before-clear',
+    5000,
+  )
+
+  registryEntries = []
+  assert.deepEqual([after?.continuedFrom, after?.name], ['before-clear', 'Литовська реєстрація'])
+})
+
+test('custom buttons are stored once for every panel and come with the state', async () => {
+  const buttons = [
+    { id: 'b1', label: 'CR High', text: '/code-review high', confirm: false },
+    { id: 'b2', label: 'MR', text: 'Зроби коміт, пуш і MR', confirm: true },
+  ]
+  const saved = await panel('/api/panel/buttons', { method: 'POST', body: JSON.stringify({ buttons }) })
+  const refused = await panel('/api/panel/buttons', { method: 'POST', body: JSON.stringify({ buttons: [{ id: 'x', label: '', text: 'y' }] }) })
+  const state = (await (await panel('/api/panel/state')).json()) as { buttons: unknown }
+
+  assert.equal(saved.status, 200)
+  assert.equal(refused.status, 422)
+  assert.deepEqual(await refused.json(), { error: 'invalid_buttons' })
+  assert.deepEqual(state.buttons, buttons)
+})
+
+test('a check started in the background runs until its output shows the result', async () => {
+  const log = join(mkdtempSync(join(tmpdir(), 'ccc-bg-')), 'suite.log')
+  const at = Date.now()
+
+  writeFileSync(log, '')
+  await events('bg', [{ t: 'hello', at, cwd: '/work/bg', repoRoot: '/work/bg', model: 'm', surfaces: ['terminal'] }])
+  await events('bg', [{ t: 'tool_start', at, id: 'bg1', tool: 'Bash', summary: `npm test > ${log} 2>&1`, background: true }])
+  await events('bg', [{ t: 'tool_end', at: at + 50, id: 'bg1', tool: 'Bash', summary: `npm test > ${log} 2>&1`, isError: false, denied: false }])
+
+  assert.equal(store.sessions.get('bg')?.tests?.endedAt, null)
+
+  writeFileSync(log, 'ParaTest\n\n.....  120 / 1500 (  8%)\n')
+  await waitForTick()
+  assert.deepEqual([store.sessions.get('bg')?.tests?.progress?.done, store.sessions.get('bg')?.tests?.endedAt], [120, null])
+
+  writeFileSync(log, 'ParaTest\n\n.....  1500 / 1500 (100%)\n\nOK (1500 tests, 4000 assertions)\n')
+
+  const ended = await waitFor(() => store.sessions.get('bg')?.tests, run => run?.endedAt !== null, 3000)
+
+  assert.deepEqual([ended?.failed, ended?.progress?.total], [false, 1500])
+})
+
+test('the time of a check is estimated from the last run of the same tool', async () => {
+  const at = Date.now() - 120_000
+
+  await events('est', [{ t: 'hello', at, cwd: '/work/est', repoRoot: '/work/est', model: 'm', surfaces: ['terminal'] }])
+  await events('est', [{ t: 'tool_start', at, id: 'e1', tool: 'Bash', summary: 'composer analyse' }])
+  await events('est', [{ t: 'tool_end', at: at + 60_000, id: 'e1', tool: 'Bash', summary: 'composer analyse', isError: false, denied: false }])
+  await events('est', [{ t: 'tool_start', at: at + 70_000, id: 'e2', tool: 'Bash', summary: 'php vendor/bin/phpstan analyse --no-progress 2>&1 | tail -3' }])
+
+  assert.equal(store.sessions.get('est')?.check?.expectedMs, 60_000)
 })

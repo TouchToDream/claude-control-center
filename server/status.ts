@@ -6,7 +6,8 @@ export type StatusRules = {
 }
 
 const CHAT_WINDOW = 3
-const WRAPPERS = new Set(['npx', 'bunx', 'php', 'python', 'python3', 'time', 'exec'])
+const WRAPPERS = new Set(['npx', 'bunx', 'php', 'python', 'python3', 'time', 'exec', 'env', 'nice', 'timeout'])
+const FLAGS_WITH_VALUE = new Set(['-d', '-c'])
 
 export function computeStatus(
   session: SessionState,
@@ -67,18 +68,66 @@ export function computeStage(session: SessionState, status: Status): Stage {
   return cycle.tests === 'failed' ? 'tests' : 'review'
 }
 
-export function isTestCommand(command: string, testCommands: readonly string[]): boolean {
-  const normalized = command.trim().replace(/\s+/g, ' ')
+export function splitCommand(command: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let quote: string | null = null
 
-  return normalized
-    .split(/&&|\|\||;|\|/)
-    .map(part => part.trim().replace(/^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+/, ''))
-    .some(part => testCommands.some(pattern => matchesCommand(part, pattern)))
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] as string
+    const next = command[index + 1]
+
+    if (char === '\\' && quote !== "'") {
+      current += char + (next ?? '')
+      index += 1
+    } else if (quote !== null) {
+      quote = char === quote ? null : quote
+      current += char
+    } else if (char === '"' || char === "'") {
+      quote = char
+      current += char
+    } else if ((char === '&' && next === '&') || (char === '|' && next === '|')) {
+      parts.push(current)
+      current = ''
+      index += 1
+    } else if (char === ';' || char === '|' || char === '\n') {
+      parts.push(current)
+      current = ''
+    } else {
+      current += char
+    }
+  }
+
+  return [...parts, current].map(part => part.trim().replace(/\s+/g, ' ')).filter(part => part !== '')
+}
+
+export function matchesAnyCommand(command: string, patterns: readonly string[]): boolean {
+  return splitCommand(command)
+    .map(part => part.replace(/^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+/, ''))
+    .some(part => patterns.some(pattern => matchesCommand(part, pattern)))
+}
+
+export function isTestCommand(command: string, testCommands: readonly string[]): boolean {
+  return matchesAnyCommand(command, testCommands)
+}
+
+function unwrap(words: readonly string[]): string[] {
+  let rest = [...words]
+
+  while (WRAPPERS.has((rest[0] ?? '').split('/').at(-1) ?? '')) {
+    rest = rest.slice(1)
+
+    while ((rest[0] ?? '').startsWith('-') || /^\d+[smh]?$/.test(rest[0] ?? '') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(rest[0] ?? '')) {
+      rest = rest.slice(FLAGS_WITH_VALUE.has(rest[0] ?? '') ? 2 : 1)
+    }
+  }
+
+  return rest
 }
 
 function matchesCommand(part: string, pattern: string): boolean {
   const words = part.split(' ')
-  const unwrapped = WRAPPERS.has(words[0] ?? '') ? words.slice(1) : words
+  const unwrapped = unwrap(words)
 
   return [words, unwrapped].some(candidate => {
     const [head = '', ...rest] = candidate

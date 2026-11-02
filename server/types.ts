@@ -82,6 +82,8 @@ export type SessionState = {
   runningTool: { id: string; tool: string; summary: string; startedAt: number } | null
   activity: string
   tests: TestRun | null
+  check: TestRun | null
+  continuedFrom: string | null
   turnError: boolean
   recentWork: boolean[]
   turnHadWork: boolean
@@ -110,6 +112,8 @@ export type TestProgress = {
   updatedAt: number
 }
 
+export type CheckKind = 'tests' | 'lint' | 'analysis'
+
 export type TestRun = {
   id: string
   sessionId: string
@@ -120,6 +124,11 @@ export type TestRun = {
   endedAt: number | null
   failed: boolean | null
   progress: TestProgress | null
+  kind?: CheckKind
+  tool?: string
+  summary?: string | null
+  tail?: string | null
+  isBackground?: boolean
 }
 
 export type RowKind = 'user' | 'assistant' | 'tool' | 'result' | 'notice' | 'peer'
@@ -189,6 +198,8 @@ export type Settings = {
   idleMinutes: number
   offlineSeconds: number
   testCommands: string[]
+  lintCommands: string[]
+  analysisCommands: string[]
   modDir: string | null
 }
 

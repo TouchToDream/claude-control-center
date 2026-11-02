@@ -117,3 +117,23 @@ test('other commands are not tests', () => {
     assert.equal(isTestCommand(command, COMMANDS), false, command)
   }
 })
+
+test('separators inside quotes do not split a command', () => {
+  const grep = 'grep -n "^lint:\\|^test:" .gitlab-ci.yml | grep -E "- .*(pint|phpstan|paratest|phpunit|artisan)" | head -20'
+
+  assert.equal(isTestCommand(grep, ['phpunit', 'paratest']), false)
+  assert.equal(isTestCommand("echo 'a; phpunit' && ls", ['phpunit']), false)
+  assert.equal(isTestCommand('git log -1 && php vendor/bin/paratest --processes=6 > /tmp/suite.log 2>&1; tail -3 /tmp/suite.log', ['paratest']), true)
+})
+
+test('interpreter flags and wrappers before the runner are skipped', () => {
+  const runners = ['phpunit', 'phpstan']
+
+  assert.equal(isTestCommand('php -d memory_limit=1G vendor/bin/phpunit 2>&1 | tail -25', runners), true)
+  assert.equal(isTestCommand('php -dmemory_limit=1G vendor/bin/phpunit', runners), true)
+  assert.equal(isTestCommand('/opt/homebrew/opt/php@8.3/bin/php -d xdebug.mode=off vendor/bin/phpunit', runners), true)
+  assert.equal(isTestCommand('env APP_ENV=testing vendor/bin/phpunit', runners), true)
+  assert.equal(isTestCommand('timeout 600 vendor/bin/phpunit --filter X', runners), true)
+  assert.equal(isTestCommand('php -l app/Foo.php', runners), false)
+  assert.equal(isTestCommand('php -r "echo 1;"', runners), false)
+})

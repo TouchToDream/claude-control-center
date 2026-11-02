@@ -20,6 +20,10 @@
     "web/src/**/*.test.ts",
     "web/src/unread.ts",
     "web/src/attachments.ts",
-    "web/src/shell.ts"
+    "web/src/shell.ts",
+    "web/src/checks.ts",
+    "web/src/limits.ts",
+    "web/src/succession.ts",
+    "web/src/quickButtons.ts"
   ]
 }

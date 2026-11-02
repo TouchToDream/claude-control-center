@@ -1,3 +1,5 @@
+import type { QuickButton } from '../../server/buttons.ts'
+import type { CheckView } from './checks.ts'
 import type {
   Ask,
   OutboxItem,
@@ -9,7 +11,7 @@ import type {
   TestRun,
 } from '../../server/types.ts'
 
-export type { Ask, OutboxItem, RateLimit, Row, Stage, Status, TestRun }
+export type { Ask, OutboxItem, QuickButton, RateLimit, Row, Stage, Status, TestRun }
 
 export type NotifyEvent = 'ask' | 'testsFailed' | 'turnError' | 'crashed' | 'done' | 'testsPassed' | 'limit'
 
@@ -86,6 +88,8 @@ export type Snapshot = {
   telegram: TelegramView
   alerts?: AlertView[]
   macAlerts?: MacAlertsView
+  checks?: CheckView[]
+  buttons?: QuickButton[]
 }
 
 export type TimelineEntry = { sessionId: string; ts: number; status: Status }

@@ -1,5 +1,6 @@
 import { telegramAction } from './api.ts'
 import { Icon } from './Icon.tsx'
+import { resetLabel } from './limits.ts'
 import type { RateLimit, Snapshot } from './model.ts'
 import { isLive, isRunning } from './model.ts'
 
@@ -8,8 +9,9 @@ const LIMITS = [
   { kind: 'seven_day', label: 'Ліміт 7 днів' },
 ]
 
-function LimitBar({ label, limit }: { label: string; limit: RateLimit | undefined }) {
+function LimitBar({ label, limit, clock }: { label: string; limit: RateLimit | undefined; clock: number }) {
   const percent = limit?.percentUsed ?? null
+  const reset = resetLabel(limit?.resetsAt, clock)
   const resets = limit?.resetsAt === undefined ? '' : `Скидання: ${new Date(limit.resetsAt).toLocaleString('uk-UA')}`
 
   return (
@@ -21,6 +23,7 @@ function LimitBar({ label, limit }: { label: string; limit: RateLimit | undefine
       <div className="track">
         <div className="fill" style={{ width: `${Math.min(percent ?? 0, 100)}%` }} />
       </div>
+      {reset !== null && <div className="limit-reset">{reset}</div>}
     </div>
   )
 }
@@ -32,9 +35,10 @@ type Props = {
   onTelegram: () => void
   isSessionsOpen: boolean
   onSessions: () => void
+  clock: number
 }
 
-export function Header({ snapshot, isConnected, onHome, onTelegram, isSessionsOpen, onSessions }: Props) {
+export function Header({ snapshot, isConnected, onHome, onTelegram, isSessionsOpen, onSessions, clock }: Props) {
   const live = snapshot.sessions.filter(isLive)
   const count = (statuses: string[]) => live.filter(session => statuses.includes(session.status)).length
   const { enabled, isReady } = snapshot.telegram
@@ -91,7 +95,7 @@ export function Header({ snapshot, isConnected, onHome, onTelegram, isSessionsOp
       </div>
       <div className="limits">
         {LIMITS.map(({ kind, label }) => (
-          <LimitBar key={kind} label={label} limit={snapshot.rateLimits.find(limit => limit.kind === kind)} />
+          <LimitBar key={kind} label={label} limit={snapshot.rateLimits.find(limit => limit.kind === kind)} clock={clock} />
         ))}
         {!isConnected && <span className="disconnected">Немає зв’язку з сервісом</span>}
       </div>
