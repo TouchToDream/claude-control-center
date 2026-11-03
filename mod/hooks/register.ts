@@ -2,7 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import { clip, redact } from './redact.ts'
 import { withOutputCopy } from './tee.ts'
 
-const MOD_VERSION = '0.10.0'
+const MOD_VERSION = '0.10.1'
 const TICK_MS = 1500
 const FLUSH_MS = 700
 const DOWN_RETRY_MS = 5000
@@ -804,8 +804,8 @@ export const register: Register = on => {
       tool === 'Bash' && typeof original.command === 'string'
         ? withOutputCopy(original.command, `/tmp/ccc-${String(id).replace(/[^A-Za-z0-9_-]/g, '')}.log`)
         : null
-    const call = copied === null ? e : ({ ...e, command: copied } as typeof e)
-    const input = call as unknown as Record<string, unknown>
+    const forwarded = copied === null ? e : ({ ...e, command: copied } as typeof e)
+    const input = forwarded as unknown as Record<string, unknown>
     const summary = summarize(tool, input)
     const agentId = e.agentId
 
@@ -814,7 +814,7 @@ export const register: Register = on => {
     const ran =
       tool === 'AskUserQuestion'
         ? ((await answerQuestion($, input, () => next(e), next.signal)) as Awaited<ReturnType<typeof next>>)
-        : await next(call)
+        : await next(forwarded)
 
     settleAskOf(tool, summary, $)
     bridge.gitDirty = true

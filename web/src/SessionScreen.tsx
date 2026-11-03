@@ -18,6 +18,7 @@ import { composeMessage, previewUrl, restoreAttachments, shortLabel, splitAttach
 import { AskCard } from './AskCard.tsx'
 import { DiffDialog } from './DiffDialog.tsx'
 import { loadAttachments, loadDraft, saveAttachments, saveDraft } from './drafts.ts'
+import { isTypingIn } from './focus.ts'
 import { Icon } from './Icon.tsx'
 import type { Attachment, OutboxItem, Row, SessionCommand, SessionView, Snapshot } from './model.ts'
 import { ago, canForceMessage, canUseShell, dropReason, isRunning, STATUS_LABEL } from './model.ts'
@@ -380,9 +381,10 @@ type ComposerProps = {
   onDraft: (text: string) => void
   attachments: Attachment[]
   onAttachments: (update: (current: Attachment[]) => Attachment[]) => void
+  focusRequest: number
 }
 
-function Composer({ session, draft, onDraft, attachments, onAttachments }: ComposerProps) {
+function Composer({ session, draft, onDraft, attachments, onAttachments, focusRequest }: ComposerProps) {
   const [error, setError] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const picker = useRef<HTMLInputElement>(null)
@@ -401,6 +403,17 @@ function Composer({ session, draft, onDraft, attachments, onAttachments }: Compo
   useEffect(() => {
     void loadCommands(session.id).then(setCommands)
   }, [session.id, draft.startsWith('/')])
+
+  useEffect(() => {
+    const textarea = field.current
+
+    if (textarea === null || isTypingIn(document.activeElement as HTMLElement | null)) {
+      return
+    }
+
+    textarea.focus()
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+  }, [focusRequest])
 
   const change = (key: string, update: Partial<Attachment>) =>
     onAttachments(current => current.map(item => (item.key === key ? { ...item, ...update } : item)))
@@ -721,9 +734,10 @@ type Props = {
   outbox: readonly OutboxItem[]
   clock: number
   onRows: (update: (current: Row[]) => Row[]) => void
+  focusRequest: number
 }
 
-export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }: Props) {
+export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows, focusRequest }: Props) {
   const [isRenaming, setIsRenaming] = useState(false)
   const [isClosing, setIsClosing] = useState(false)
   const [isResuming, setIsResuming] = useState(false)
@@ -823,6 +837,7 @@ export function SessionScreen({ session, snapshot, rows, outbox, clock, onRows }
               onDraft={setDraft}
               attachments={attachments}
               onAttachments={setAttachments}
+              focusRequest={focusRequest}
             />
           )}
         </div>

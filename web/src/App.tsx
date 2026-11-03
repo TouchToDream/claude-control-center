@@ -62,6 +62,7 @@ export function App() {
   const [isSessionsOpen, setIsSessionsOpen] = useState(false)
   const [clock, setClock] = useState(Date.now())
   const [isAppShown, setIsAppShown] = useState(false)
+  const [focusRequest, setFocusRequest] = useState(0)
   const [isPageVisible, setIsPageVisible] = useState(isPageInView)
   const isVisible = IS_IN_APP ? isAppShown : isPageVisible
 
@@ -96,7 +97,20 @@ export function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
-  useEffect(() => installAppBridge({ onShow: openRequested, onShown: setIsAppShown }), [])
+  useEffect(
+    () =>
+      installAppBridge({
+        onShow: openRequested,
+        onShown: isShown => {
+          setIsAppShown(isShown)
+
+          if (isShown) {
+            setFocusRequest(count => count + 1)
+          }
+        },
+      }),
+    [],
+  )
 
   useEffect(() => {
     const stopFileDrop = (event: DragEvent) => {
@@ -217,6 +231,7 @@ export function App() {
               outbox={outbox}
               clock={clock}
               onRows={setRows}
+              focusRequest={focusRequest}
             />
           )}
         </main>
